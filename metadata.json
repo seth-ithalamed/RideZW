@@ -1,0 +1,6 @@
+{
+  "name": "RideZW",
+  "description": "RideZW: Your Ride, Anytime. Zimbabwe's premier e-hailing platform, driver partner portal, fleet operations suite, and integrated transport compliance registry.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
