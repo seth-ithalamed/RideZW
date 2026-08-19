@@ -2156,6 +2156,20 @@ export const TRANSLATIONS = {
 
 export const INITIAL_ADMIN_USERS: AdminUser[] = [
   {
+    id: 'adm-root-001',
+    name: 'Seth (Platform Founder)',
+    email: 'seth.bbd@gmail.com',
+    phone: '+263 77 123 4567',
+    role: 'super_admin',
+    department: 'Executive Operations & Core Infrastructure',
+    avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
+    status: 'active',
+    permissions: ['all_access', 'manage_pricing', 'manage_staff', 'approve_kyc', 'process_payouts', 'manage_sos', 'view_ledgers', 'export_financial_reports'],
+    lastLoginAt: '2026-08-19T07:45:00Z',
+    createdAt: '2026-01-01T08:00:00Z',
+    isRootSuperAdmin: true
+  },
+  {
     id: 'adm-001',
     name: 'Farai Ndlovu',
     email: 'admin@ride.co.zw',
@@ -2167,7 +2181,7 @@ export const INITIAL_ADMIN_USERS: AdminUser[] = [
     permissions: ['all_access', 'manage_pricing', 'manage_staff', 'approve_kyc', 'process_payouts', 'manage_sos', 'view_ledgers'],
     lastLoginAt: '2026-08-16T22:45:00Z',
     createdAt: '2026-01-01T08:00:00Z',
-    isRootSuperAdmin: true
+    isRootSuperAdmin: false
   },
   {
     id: 'adm-002',

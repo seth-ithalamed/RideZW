@@ -51,14 +51,33 @@ export const Header: React.FC<HeaderProps> = ({
     }
   };
 
+  const state = store.getState();
+  const activeDriver = state.drivers.find((d) => d.id === state.activeDriverId) || state.drivers[0];
+  const rootAdmin = state.adminUsers.find((a) => a.isRootSuperAdmin) || state.adminUsers[0];
+
   const getPortalInfo = () => {
     switch (activeTab) {
       case 'rider':
-        return { title: 'Rider Portal', icon: Smartphone, user: 'Tafadzwa (Rider)', color: 'bg-sky-50 text-sky-900 border-sky-200' };
+        return {
+          title: 'Rider Portal',
+          icon: Smartphone,
+          user: `${state.rider.name} (${state.rider.phone})`,
+          color: 'bg-sky-50 text-sky-900 border-sky-200'
+        };
       case 'driver':
-        return { title: 'Driver Partner Cockpit', icon: Car, user: 'Tendai (Driver • AFE-8921)', color: 'bg-emerald-50 text-emerald-900 border-emerald-200' };
+        return {
+          title: 'Driver Partner Cockpit',
+          icon: Car,
+          user: `${activeDriver.name} (${activeDriver.vehicle.plateNumber})`,
+          color: 'bg-emerald-50 text-emerald-900 border-emerald-200'
+        };
       case 'admin':
-        return { title: 'Operations Management Suite', icon: ShieldCheck, user: 'Platform Administrator', color: 'bg-amber-50 text-amber-950 border-amber-200' };
+        return {
+          title: 'Operations Suite',
+          icon: ShieldCheck,
+          user: `${rootAdmin?.name || 'Seth'} (Root Super-Admin)`,
+          color: 'bg-amber-50 text-amber-950 border-amber-200'
+        };
       default:
         return null;
     }

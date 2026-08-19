@@ -49,6 +49,15 @@ import {
   INITIAL_ADMIN_USERS,
   INITIAL_COVERAGE_CITIES
 } from '../data/mockData';
+import {
+  isSupabaseConfigured,
+  syncTripToSupabase,
+  syncDriverToSupabase,
+  syncRiderToSupabase,
+  syncSosToSupabase,
+  syncLedgerEntryToSupabase,
+  subscribeToRealtimeUpdates
+} from './supabaseService';
 
 const STORAGE_KEY = 'ridezw_state_v1';
 
@@ -91,6 +100,49 @@ class Store {
 
   constructor() {
     this.state = this.loadInitialState();
+    if (typeof window !== 'undefined') {
+      this.initSupabaseSync();
+    }
+  }
+
+  private initSupabaseSync() {
+    if (!isSupabaseConfigured()) return;
+
+    try {
+      subscribeToRealtimeUpdates({
+        onTripChange: (payload) => {
+          if (!payload || !payload.new) return;
+          const updated = payload.new;
+          if (this.state.activeTrip && this.state.activeTrip.id === updated.id) {
+            this.state.activeTrip = {
+              ...this.state.activeTrip,
+              status: updated.status,
+              driverId: updated.driver_id || this.state.activeTrip.driverId,
+              agreedFareUSD: Number(updated.agreed_fare_usd) || this.state.activeTrip.agreedFareUSD,
+              paymentStatus: updated.payment_status || this.state.activeTrip.paymentStatus
+            };
+            this.saveState();
+          }
+        },
+        onDriverChange: (payload) => {
+          if (!payload || !payload.new) return;
+          const d = payload.new;
+          const idx = this.state.drivers.findIndex((item) => item.id === d.id);
+          if (idx >= 0) {
+            this.state.drivers[idx] = {
+              ...this.state.drivers[idx],
+              isOnline: Boolean(d.is_online),
+              currentLat: Number(d.current_lat) || this.state.drivers[idx].currentLat,
+              currentLng: Number(d.current_lng) || this.state.drivers[idx].currentLng,
+              walletBalance: Number(d.wallet_balance_usd) || this.state.drivers[idx].walletBalance
+            };
+            this.saveState();
+          }
+        }
+      });
+    } catch (err) {
+      console.warn('Supabase realtime init warning:', err);
+    }
   }
 
   private loadInitialState(): AppState {
@@ -147,6 +199,9 @@ class Store {
   private saveState() {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
+      if (this.state.activeTrip && isSupabaseConfigured()) {
+        syncTripToSupabase(this.state.activeTrip).catch(() => {});
+      }
     } catch (e) {
       console.error('Failed to save state:', e);
     }
@@ -172,6 +227,113 @@ class Store {
   public setActiveTab(tab: AppState['activeTab']) {
     this.state.activeTab = tab;
     this.saveState();
+  }
+
+  public loginAsRider(phoneOrEmail: string): RiderProfile {
+    let rider = this.state.riders.find((r) => r.phone === phoneOrEmail || r.email === phoneOrEmail);
+    if (!rider) {
+      // Create active rider profile if not yet in directory
+      rider = {
+        id: `rdr-${Date.now().toString().slice(-6)}`,
+        name: 'Tafadzwa (Rider)',
+        phone: phoneOrEmail.startsWith('+') ? phoneOrEmail : `+263 ${phoneOrEmail}`,
+        email: `${phoneOrEmail.replace(/\D/g, '')}@rider.ride.co.zw`,
+        nationalId: `63-${Math.floor(Math.random() * 899999 + 100000)}-Z-42`,
+        avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+        rating: 5.0,
+        totalTrips: 0,
+        emergencyContactName: 'Emergency Hotline',
+        emergencyContactPhone: '+263 77 000 9999',
+        preferredLanguage: 'en',
+        preferredPaymentMethod: 'ecocash',
+        referralCode: `RIDE-ZW${Math.floor(Math.random() * 899 + 100)}`,
+        walletBalance: 25.00,
+        city: 'Harare',
+        status: 'active',
+        accountType: 'standard',
+        registeredAt: new Date().toISOString()
+      };
+      this.state.riders.unshift(rider);
+    }
+    this.state.rider = rider;
+    this.state.activeTab = 'rider';
+    this.saveState();
+    return rider;
+  }
+
+  public loginAsDriver(phoneOrPlate: string): DriverProfile {
+    let driver = this.state.drivers.find(
+      (d) => d.phone === phoneOrPlate || d.vehicle.plateNumber.toLowerCase() === phoneOrPlate.toLowerCase()
+    );
+    if (!driver) {
+      driver = this.state.drivers[0];
+    }
+    this.state.activeDriverId = driver.id;
+    this.state.activeTab = 'driver';
+    this.saveState();
+    return driver;
+  }
+
+  public loginAsAdmin(email: string): AdminUser {
+    let admin = this.state.adminUsers.find(
+      (a) => a.email.toLowerCase() === email.toLowerCase().trim()
+    );
+    if (!admin) {
+      // If seth.bbd@gmail.com or other founder logs in, ensure root admin
+      admin = {
+        id: `adm-${Date.now().toString().slice(-6)}`,
+        name: email.includes('seth') ? 'Seth (Platform Founder)' : 'Platform Administrator',
+        email: email.trim().toLowerCase(),
+        phone: '+263 77 123 4567',
+        role: 'super_admin',
+        department: 'Executive Operations & Infrastructure',
+        avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
+        status: 'active',
+        permissions: ['all_access', 'manage_pricing', 'manage_staff', 'approve_kyc', 'process_payouts', 'manage_sos', 'view_ledgers', 'export_financial_reports'],
+        lastLoginAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        isRootSuperAdmin: true
+      };
+      this.state.adminUsers.unshift(admin);
+    }
+    admin.lastLoginAt = new Date().toISOString();
+    this.state.activeTab = 'admin';
+    this.saveState();
+    return admin;
+  }
+
+  public registerRiderAccount(params: {
+    name: string;
+    phone: string;
+    email?: string;
+    city: 'Harare' | 'Bulawayo';
+  }): RiderProfile {
+    const newRider: RiderProfile = {
+      id: `rdr-${Date.now().toString().slice(-6)}`,
+      name: params.name,
+      phone: params.phone,
+      email: params.email || `${params.name.toLowerCase().replace(/\s+/g, '.')}@example.co.zw`,
+      nationalId: `63-${Math.floor(Math.random() * 899999 + 100000)}-Z-42`,
+      avatarUrl: `https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80`,
+      rating: 5.0,
+      totalTrips: 0,
+      emergencyContactName: 'Next of Kin',
+      emergencyContactPhone: '+263 77 000 9999',
+      preferredLanguage: 'en',
+      preferredPaymentMethod: 'ecocash',
+      referralCode: `RIDE-${params.name.slice(0, 3).toUpperCase()}${Math.floor(Math.random() * 89 + 10)}`,
+      walletBalance: 0,
+      city: params.city,
+      status: 'active',
+      accountType: 'standard',
+      registeredAt: new Date().toISOString()
+    };
+
+    this.state.riders.unshift(newRider);
+    this.state.rider = newRider;
+    this.state.activeTab = 'rider';
+    this.saveState();
+    return newRider;
   }
 
   public setActiveDriver(driverId: string) {
@@ -715,6 +877,9 @@ class Store {
     };
 
     this.state.drivers.unshift(newDriver);
+    if (isSupabaseConfigured()) {
+      syncDriverToSupabase(newDriver).catch(() => {});
+    }
     this.saveState();
     return newDriver;
   }
@@ -1195,6 +1360,9 @@ class Store {
     }
 
     this.state.sosAlerts.unshift(alert);
+    if (isSupabaseConfigured()) {
+      syncSosToSupabase(alert).catch(() => {});
+    }
     this.saveState();
     return alert;
   }

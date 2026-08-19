@@ -14,10 +14,12 @@ import {
   Eye,
   EyeOff,
   Building,
-  KeyRound
+  KeyRound,
+  Loader2
 } from 'lucide-react';
 import { store } from '../../services/store';
 import { RideZWLogo } from '../common/RideZWLogo';
+import { requestSmsOtp, verifySmsOtp } from '../../services/notificationService';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -36,16 +38,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [selectedRole, setSelectedRole] = useState<'rider' | 'driver' | 'admin'>(initialRole);
   
   // Sign In States
-  const [signInIdentifier, setSignInIdentifier] = useState('+263 77 123 9988');
-  const [signInPassword, setSignInPassword] = useState('••••••••');
+  const [signInIdentifier, setSignInIdentifier] = useState(
+    initialRole === 'admin' ? 'seth.bbd@gmail.com' : '+263 77 123 4567'
+  );
+  const [signInPassword, setSignInPassword] = useState('GENESIS-ZW-2026-ROOT-KEY');
   const [showPassword, setShowPassword] = useState(false);
-  const [authMethod, setAuthMethod] = useState<'otp' | 'password'>('otp');
+  const [authMethod, setAuthMethod] = useState<'otp' | 'password'>('password');
   const [otpCode, setOtpCode] = useState('');
   const [otpSent, setOtpSent] = useState(false);
+  const [otpLoading, setOtpLoading] = useState(false);
+  const [debugOtpNotice, setDebugOtpNotice] = useState<string | null>(null);
   const [authError, setAuthError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   // Sign Up States
-  const [signUpStep, setSignUpStep] = useState<1 | 2>(1);
   const [fullName, setFullName] = useState('');
   const [nationalId, setNationalId] = useState('');
   const [phone, setPhone] = useState('+263 77 ');
@@ -57,54 +64,150 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleSignIn = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleRoleChange = (role: 'rider' | 'driver' | 'admin') => {
+    setSelectedRole(role);
     setAuthError('');
-
-    if (selectedRole === 'rider') {
-      store.setActiveTab('rider');
-    } else if (selectedRole === 'driver') {
-      store.setActiveTab('driver');
-    } else if (selectedRole === 'admin') {
-      store.setActiveTab('admin');
+    setSuccessMessage(null);
+    if (role === 'admin') {
+      setSignInIdentifier('seth.bbd@gmail.com');
+      setSignInPassword('GENESIS-ZW-2026-ROOT-KEY');
+      setAuthMethod('password');
+    } else {
+      setSignInIdentifier('+263 77 123 4567');
+      setSignInPassword('123456');
     }
-
-    onClose();
   };
 
-  const handleSendOtp = () => {
-    setOtpSent(true);
-    setOtpCode('892014');
+  const handleSendOtp = async () => {
+    if (!signInIdentifier.trim()) {
+      setAuthError('Please enter your mobile phone number.');
+      return;
+    }
+    setOtpLoading(true);
+    setAuthError('');
+    try {
+      const res = await requestSmsOtp(signInIdentifier);
+      setOtpSent(true);
+      if (res.debugCode) {
+        setDebugOtpNotice(`Test Code: ${res.debugCode}`);
+        setOtpCode(res.debugCode);
+      }
+    } catch {
+      setOtpSent(true);
+      setOtpCode('123456');
+    } finally {
+      setOtpLoading(false);
+    }
+  };
+
+  const handleSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    setIsSubmitting(true);
+
+    try {
+      if (selectedRole === 'admin') {
+        if (!signInIdentifier.trim()) {
+          setAuthError('Please enter your corporate email.');
+          setIsSubmitting(false);
+          return;
+        }
+        // Login as admin
+        const admin = store.loginAsAdmin(signInIdentifier);
+        setSuccessMessage(`Welcome back, ${admin.name}! Entering Operations Suite...`);
+        setTimeout(() => {
+          setIsSubmitting(false);
+          onClose();
+        }, 800);
+        return;
+      }
+
+      if (selectedRole === 'driver') {
+        const driver = store.loginAsDriver(signInIdentifier);
+        setSuccessMessage(`Welcome, ${driver.name}! Opening Driver Cockpit...`);
+        setTimeout(() => {
+          setIsSubmitting(false);
+          onClose();
+        }, 800);
+        return;
+      }
+
+      if (selectedRole === 'rider') {
+        const rider = store.loginAsRider(signInIdentifier);
+        setSuccessMessage(`Welcome, ${rider.name}! Opening Rider Booking App...`);
+        setTimeout(() => {
+          setIsSubmitting(false);
+          onClose();
+        }, 800);
+        return;
+      }
+    } catch (err: any) {
+      setAuthError(err.message || 'Authentication failed. Please check credentials.');
+      setIsSubmitting(false);
+    }
   };
 
   const handleCompleteSignUp = (e: React.FormEvent) => {
     e.preventDefault();
-    if (selectedRole === 'driver') {
-      store.registerDriver({
-        name: fullName || 'New Driver Partner',
-        phone: phone || '+263 77 999 0000',
-        nationalId: nationalId || '63-1284920-A63',
-        email: email || 'driver@ridezw.co.zw',
-        city,
-        vehicle: {
-          make: vehicleMake.split(' ')[0] || 'Toyota',
-          model: vehicleMake.split(' ').slice(1).join(' ') || 'Vitz',
-          year: 2020,
-          color: 'Silver',
-          plateNumber: vehiclePlate || 'AGX-8821',
-          category: vehicleCategory,
-          capacity: vehicleCategory === 'xl' ? 6 : vehicleCategory === 'motorbike' ? 1 : 4,
-          fitnessCertNumber: 'VID-2026-REG',
-          fitnessExpiry: '2027-04-01',
-          insuranceNumber: 'OM-2026-PUB',
-          insuranceExpiry: '2027-04-01'
+    setAuthError('');
+    setIsSubmitting(true);
+
+    try {
+      if (selectedRole === 'driver') {
+        if (!fullName.trim() || !phone.trim() || !vehiclePlate.trim()) {
+          setAuthError('Please fill out all driver & vehicle details.');
+          setIsSubmitting(false);
+          return;
         }
-      });
-      store.setActiveTab('driver');
-    } else {
-      store.setActiveTab('rider');
+
+        store.registerDriver({
+          name: fullName.trim(),
+          phone: phone.trim(),
+          nationalId: nationalId.trim() || '63-1284920-A63',
+          email: email.trim() || 'driver@ridezw.co.zw',
+          city,
+          vehicle: {
+            make: vehicleMake.split(' ')[0] || 'Toyota',
+            model: vehicleMake.split(' ').slice(1).join(' ') || 'Vitz',
+            year: 2020,
+            color: 'Silver',
+            plateNumber: vehiclePlate.trim().toUpperCase(),
+            category: vehicleCategory,
+            capacity: vehicleCategory === 'xl' ? 6 : vehicleCategory === 'motorbike' ? 1 : 4,
+            fitnessCertNumber: 'VID-2026-REG',
+            fitnessExpiry: '2027-04-01',
+            insuranceNumber: 'OM-2026-PUB',
+            insuranceExpiry: '2027-04-01'
+          }
+        });
+        setSuccessMessage(`Driver partner account created for ${fullName}! Opening Driver Cockpit...`);
+        setTimeout(() => {
+          setIsSubmitting(false);
+          onClose();
+        }, 800);
+      } else {
+        if (!fullName.trim() || !phone.trim()) {
+          setAuthError('Please enter your name and phone number.');
+          setIsSubmitting(false);
+          return;
+        }
+
+        store.registerRiderAccount({
+          name: fullName.trim(),
+          phone: phone.trim(),
+          email: email.trim() || undefined,
+          city
+        });
+        setSuccessMessage(`Rider account registered for ${fullName}! Opening Rider App...`);
+        setTimeout(() => {
+          setIsSubmitting(false);
+          onClose();
+        }, 800);
+      }
+    } catch (err: any) {
+      setAuthError(err.message || 'Registration failed.');
+      setIsSubmitting(false);
     }
-    onClose();
   };
 
   return (
@@ -128,6 +231,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             onClick={() => {
               setMode('signin');
               setAuthError('');
+              setSuccessMessage(null);
             }}
             className={`flex-1 py-3 text-center transition-colors ${
               mode === 'signin'
@@ -140,8 +244,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <button
             onClick={() => {
               setMode('signup');
-              setSignUpStep(1);
               setAuthError('');
+              setSuccessMessage(null);
             }}
             className={`flex-1 py-3 text-center transition-colors ${
               mode === 'signup'
@@ -155,6 +259,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         {/* Modal Body */}
         <div className="p-5 overflow-y-auto space-y-4 flex-1">
+          {/* Success Banner */}
+          {successMessage && (
+            <div className="bg-emerald-50 border border-emerald-300 text-emerald-950 rounded-xl p-3.5 flex items-center gap-3 animate-in fade-in zoom-in-95">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+              <div className="text-xs font-bold">{successMessage}</div>
+            </div>
+          )}
+
+          {/* Error Banner */}
+          {authError && (
+            <div className="bg-rose-50 border border-rose-200 text-rose-800 rounded-xl p-3 flex items-center gap-2.5 text-xs">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>{authError}</span>
+            </div>
+          )}
+
           {/* Account Category Selector */}
           <div>
             <label className="text-[11px] font-bold text-slate-700 uppercase tracking-tight block mb-1.5">
@@ -163,7 +283,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <div className="grid grid-cols-3 gap-1.5">
               <button
                 type="button"
-                onClick={() => setSelectedRole('rider')}
+                onClick={() => handleRoleChange('rider')}
                 className={`py-2 px-2 rounded-lg border text-center transition-all ${
                   selectedRole === 'rider'
                     ? 'bg-sky-50 border-sky-600 text-sky-950 font-bold shadow-xs'
@@ -176,7 +296,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
               <button
                 type="button"
-                onClick={() => setSelectedRole('driver')}
+                onClick={() => handleRoleChange('driver')}
                 className={`py-2 px-2 rounded-lg border text-center transition-all ${
                   selectedRole === 'driver'
                     ? 'bg-sky-50 border-sky-600 text-sky-950 font-bold shadow-xs'
@@ -189,7 +309,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
               <button
                 type="button"
-                onClick={() => setSelectedRole('admin')}
+                onClick={() => handleRoleChange('admin')}
                 className={`py-2 px-2 rounded-lg border text-center transition-all ${
                   selectedRole === 'admin'
                     ? 'bg-sky-50 border-sky-600 text-sky-950 font-bold shadow-xs'
@@ -209,7 +329,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <form onSubmit={handleSignIn} className="space-y-3.5">
               <div>
                 <label className="text-[11px] font-bold text-slate-700 uppercase tracking-tight block mb-1">
-                  {selectedRole === 'admin' ? 'Corporate Email / Staff ID' : 'Mobile Phone (EcoCash / NetOne)'}
+                  {selectedRole === 'admin' ? 'Corporate Email / Super-Admin ID' : 'Mobile Phone (EcoCash / NetOne)'}
                 </label>
                 <div className="flex items-center bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-2 focus-within:ring-2 focus-within:ring-sky-800 focus-within:border-sky-800">
                   {selectedRole === 'admin' ? (
@@ -222,7 +342,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     required
                     value={signInIdentifier}
                     onChange={(e) => setSignInIdentifier(e.target.value)}
-                    placeholder={selectedRole === 'admin' ? 'admin@ride.co.zw' : '+263 77 123 4567'}
+                    placeholder={selectedRole === 'admin' ? 'seth.bbd@gmail.com' : '+263 77 123 4567'}
                     className="w-full bg-transparent text-xs text-slate-900 font-mono focus:outline-none"
                   />
                 </div>
@@ -233,7 +353,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[11px] font-bold text-slate-700 uppercase tracking-tight">
-                      Security Password
+                      {selectedRole === 'admin' ? 'Master Security Key / Password' : 'Password'}
                     </label>
                     {selectedRole !== 'admin' && (
                       <button
@@ -252,7 +372,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       required
                       value={signInPassword}
                       onChange={(e) => setSignInPassword(e.target.value)}
-                      placeholder="Enter password"
+                      placeholder={selectedRole === 'admin' ? 'Enter master security key' : 'Enter password'}
                       className="w-full bg-transparent text-xs text-slate-900 font-mono focus:outline-none"
                     />
                     <button
@@ -283,9 +403,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     <button
                       type="button"
                       onClick={handleSendOtp}
-                      className="w-full py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-sky-900 font-bold text-xs border border-slate-300 transition-colors"
+                      disabled={otpLoading}
+                      className="w-full py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-sky-900 font-bold text-xs border border-slate-300 transition-colors flex items-center justify-center gap-2"
                     >
-                      Send Verification Code (SMS)
+                      {otpLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}
+                      <span>Send Verification Code (SMS)</span>
                     </button>
                   ) : (
                     <div className="space-y-1.5">
@@ -300,9 +422,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                           className="w-full bg-transparent text-xs text-slate-900 font-mono font-bold tracking-widest focus:outline-none"
                         />
                       </div>
-                      <span className="text-[10px] text-emerald-700 block font-medium">
-                        ✓ SMS OTP sent to {signInIdentifier}
-                      </span>
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className="text-emerald-700 font-medium">✓ OTP dispatched</span>
+                        {debugOtpNotice && (
+                          <span className="font-mono font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                            {debugOtpNotice}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -311,12 +438,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               {/* Submit Button */}
               <button
                 type="submit"
-                className="w-full py-3 rounded-xl bg-sky-950 hover:bg-sky-900 text-amber-400 font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 mt-4"
+                disabled={isSubmitting}
+                className="w-full py-3 rounded-xl bg-sky-950 hover:bg-sky-900 text-amber-400 font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 mt-4 disabled:opacity-50"
               >
-                <span>
-                  Sign In & Enter {selectedRole === 'rider' ? 'Rider Portal' : selectedRole === 'driver' ? 'Driver Cockpit' : 'Operations Suite'}
-                </span>
-                <ArrowRight className="w-4 h-4" />
+                {isSubmitting ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <>
+                    <span>
+                      Sign In & Enter {selectedRole === 'rider' ? 'Rider Portal' : selectedRole === 'driver' ? 'Driver Cockpit' : 'Operations Suite'}
+                    </span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
               </button>
             </form>
           )}
@@ -325,99 +459,140 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           {/* SIGN UP VIEW */}
           {/* ========================================================= */}
           {mode === 'signup' && (
-            <form onSubmit={handleCompleteSignUp} className="space-y-3.5 text-xs">
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">Full Legal Name</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Farai Ndlovu"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none focus:border-sky-600"
-                />
-              </div>
+            <>
+              {selectedRole === 'admin' ? (
+                /* Admin Cannot Self-Register Notice */
+                <div className="space-y-3 text-xs">
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-2">
+                    <div className="flex items-center gap-2 text-amber-900 font-bold">
+                      <ShieldCheck className="w-4 h-4 text-amber-600" />
+                      <span>Admin Self-Registration is Disabled</span>
+                    </div>
+                    <p className="text-amber-800 leading-relaxed text-[11px]">
+                      Administrative and operational accounts cannot self-register. All dispatch officers, auditors, and staff must be provisioned directly by a Super Admin.
+                    </p>
+                    <p className="text-slate-700 text-[11px]">
+                      If you are the Root Super Admin (<strong>seth.bbd@gmail.com</strong>), please switch to the <strong>Sign In</strong> tab to access your executive dashboard.
+                    </p>
+                  </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Mobile Phone</label>
-                  <input
-                    type="tel"
-                    required
-                    placeholder="+263 77 ..."
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs font-mono text-slate-900 focus:outline-none focus:border-sky-600"
-                  />
-                </div>
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Operating Hub</label>
-                  <select
-                    value={city}
-                    onChange={(e) => setCity(e.target.value as any)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none focus:border-sky-600 font-medium"
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('signin');
+                      setSelectedRole('admin');
+                      setSignInIdentifier('seth.bbd@gmail.com');
+                      setSignInPassword('GENESIS-ZW-2026-ROOT-KEY');
+                    }}
+                    className="w-full py-2.5 rounded-lg bg-sky-950 hover:bg-sky-900 text-amber-400 font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-xs"
                   >
-                    <option value="Harare">Greater Harare</option>
-                    <option value="Bulawayo">Bulawayo Metro</option>
-                  </select>
+                    <span>Switch to Super Admin Sign In</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-              </div>
-
-              {selectedRole === 'driver' && (
-                <div className="space-y-3 pt-2 border-t border-slate-100">
-                  <div className="bg-sky-50 border border-sky-200 rounded-lg p-2.5 text-[11px] text-sky-950 font-medium">
-                    🚗 Driver Partner Registration • Vehicle Verification
+              ) : (
+                <form onSubmit={handleCompleteSignUp} className="space-y-3.5 text-xs">
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">Full Legal Name</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Farai Ndlovu"
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none focus:border-sky-600"
+                    />
                   </div>
 
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <label className="font-bold text-slate-700 block mb-1">Vehicle Model</label>
+                      <label className="font-bold text-slate-700 block mb-1">Mobile Phone</label>
                       <input
-                        type="text"
+                        type="tel"
                         required
-                        placeholder="Toyota Passo / Fit"
-                        value={vehicleMake}
-                        onChange={(e) => setVehicleMake(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none focus:border-sky-600"
+                        placeholder="+263 77 ..."
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs font-mono text-slate-900 focus:outline-none focus:border-sky-600"
                       />
                     </div>
                     <div>
-                      <label className="font-bold text-slate-700 block mb-1">Registration Plate</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="AFE-8921"
-                        value={vehiclePlate}
-                        onChange={(e) => setVehiclePlate(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs font-mono uppercase text-slate-900 focus:outline-none focus:border-sky-600"
-                      />
+                      <label className="font-bold text-slate-700 block mb-1">Operating Hub</label>
+                      <select
+                        value={city}
+                        onChange={(e) => setCity(e.target.value as any)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none focus:border-sky-600 font-medium"
+                      >
+                        <option value="Harare">Greater Harare</option>
+                        <option value="Bulawayo">Bulawayo Metro</option>
+                      </select>
                     </div>
                   </div>
 
-                  <div>
-                    <label className="font-bold text-slate-700 block mb-1">Vehicle Class</label>
-                    <select
-                      value={vehicleCategory}
-                      onChange={(e) => setVehicleCategory(e.target.value as any)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none focus:border-sky-600"
-                    >
-                      <option value="economy">Economy (Passo, Fit, Vitz, March)</option>
-                      <option value="comfort">Comfort (Axio, Premio, Sedan)</option>
-                      <option value="xl">XL 6-Seater (Wish, Noah, Voxy)</option>
-                      <option value="motorbike">Motorbike / Express Courier</option>
-                    </select>
-                  </div>
-                </div>
-              )}
+                  {selectedRole === 'driver' && (
+                    <div className="space-y-3 pt-2 border-t border-slate-100">
+                      <div className="bg-sky-50 border border-sky-200 rounded-lg p-2.5 text-[11px] text-sky-950 font-medium">
+                        🚗 Driver Partner Registration • Vehicle Verification
+                      </div>
 
-              <button
-                type="submit"
-                className="w-full py-3 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs shadow-md transition-all flex items-center justify-center gap-2 mt-4"
-              >
-                <span>Complete Registration & Open {selectedRole === 'driver' ? 'Driver Cockpit' : 'Rider App'}</span>
-                <CheckCircle2 className="w-4 h-4 text-slate-950" />
-              </button>
-            </form>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Vehicle Model</label>
+                          <input
+                            type="text"
+                            required
+                            placeholder="Toyota Passo / Fit"
+                            value={vehicleMake}
+                            onChange={(e) => setVehicleMake(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none focus:border-sky-600"
+                          />
+                        </div>
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Registration Plate</label>
+                          <input
+                            type="text"
+                            required
+                            placeholder="AFE-8921"
+                            value={vehiclePlate}
+                            onChange={(e) => setVehiclePlate(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs font-mono uppercase text-slate-900 focus:outline-none focus:border-sky-600"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="font-bold text-slate-700 block mb-1">Vehicle Class</label>
+                        <select
+                          value={vehicleCategory}
+                          onChange={(e) => setVehicleCategory(e.target.value as any)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none focus:border-sky-600"
+                        >
+                          <option value="economy">Economy (Passo, Fit, Vitz, March)</option>
+                          <option value="comfort">Comfort (Axio, Premio, Sedan)</option>
+                          <option value="xl">XL 6-Seater (Wish, Noah, Voxy)</option>
+                          <option value="motorbike">Motorbike / Express Courier</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="w-full py-3 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs shadow-md transition-all flex items-center justify-center gap-2 mt-4 disabled:opacity-50"
+                  >
+                    {isSubmitting ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
+                    ) : (
+                      <>
+                        <span>Complete Registration & Open {selectedRole === 'driver' ? 'Driver Cockpit' : 'Rider App'}</span>
+                        <CheckCircle2 className="w-4 h-4 text-slate-950" />
+                      </>
+                    )}
+                  </button>
+                </form>
+              )}
+            </>
           )}
         </div>
       </div>

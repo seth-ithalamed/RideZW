@@ -139,12 +139,12 @@ export const StaffManagementTab: React.FC<StaffManagementTabProps> = ({ onOpenGe
               <h2 className="text-base font-bold text-white tracking-tight">
                 Platform Operator & Staff RBAC Administration
               </h2>
-              <span className="bg-sky-500/20 text-sky-300 border border-sky-400/30 text-[10px] font-mono font-bold px-2 py-0.5 rounded">
-                INTERNAL OPERATOR SCOPE
+              <span className="bg-rose-500/20 text-rose-300 border border-rose-400/30 text-[10px] font-mono font-bold px-2 py-0.5 rounded">
+                SELF-REGISTRATION DISABLED
               </span>
             </div>
             <p className="text-xs text-slate-300 leading-relaxed">
-              Manage executive administrators, regional dispatch officers, KYC compliance reviewers, and treasury auditors. Role-Based Access Control (RBAC) enforces strict separation of duties across Harare & Bulawayo hubs.
+              Staff and operational accounts <strong>cannot self-register</strong>. All dispatch officers, KYC compliance reviewers, and treasury auditors must be explicitly provisioned by an authenticated Super Admin with strict Role-Based Access Control (RBAC).
             </p>
           </div>
 
