@@ -18,10 +18,13 @@ import {
   Navigation,
   HelpCircle,
   ChevronDown,
-  Check
+  Check,
+  Compass
 } from 'lucide-react';
-import { Currency, Language, VehicleCategory } from '../../types';
+import { Currency, Language, VehicleCategory, LocationPoint } from '../../types';
 import { RideZWLogo } from '../common/RideZWLogo';
+import { MapboxLocationSearchInput } from '../common/MapboxLocationSearchInput';
+import { calculateMapboxRoute } from '../../services/mapboxService';
 
 interface LandingPageProps {
   currency: Currency;
@@ -34,27 +37,55 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   language,
   onOpenAuth
 }) => {
-  const [estimatePickup, setEstimatePickup] = useState('Harare CBD (First St & Nelson Mandela)');
-  const [estimateDropoff, setEstimateDropoff] = useState('Borrowdale Village (Sam Levy)');
+  const [calculatorCity, setCalculatorCity] = useState<string>('Harare');
+  const [pickupLocation, setPickupLocation] = useState<LocationPoint>({
+    address: 'First Mutual Tower, 95 Jason Moyo Ave',
+    neighborhood: 'Harare CBD',
+    city: 'Harare',
+    lat: -17.8292,
+    lng: 31.0522
+  });
+  const [dropoffLocation, setDropoffLocation] = useState<LocationPoint>({
+    address: 'Sam Levy\'s Village, Borrowdale Rd',
+    neighborhood: 'Borrowdale',
+    city: 'Harare',
+    lat: -17.7558,
+    lng: 31.0852
+  });
   const [selectedCategory, setSelectedCategory] = useState<VehicleCategory>('comfort');
   const [openFaq, setOpenFaq] = useState<number | null>(null);
 
-  const basePrices: Record<VehicleCategory, number> = {
-    economy: 6.5,
-    comfort: 9.0,
-    xl: 14.0,
-    motorbike: 4.5
+  // Dynamic Mapbox Route Calculation
+  const routeData = calculateMapboxRoute(pickupLocation, dropoffLocation);
+  const distanceKm = routeData.distanceKm;
+  const durationMinutes = routeData.durationMinutes;
+
+  const categoryRates: Record<VehicleCategory, { base: number; perKm: number; perMin: number }> = {
+    economy: { base: 3.5, perKm: 0.75, perMin: 0.12 },
+    comfort: { base: 5.0, perKm: 1.05, perMin: 0.18 },
+    xl: { base: 8.0, perKm: 1.45, perMin: 0.25 },
+    motorbike: { base: 2.5, perKm: 0.50, perMin: 0.08 }
   };
 
   const getEstimatedFareUSD = () => {
-    return basePrices[selectedCategory] || 8.0;
+    const rate = categoryRates[selectedCategory] || categoryRates.comfort;
+    const computed = rate.base + distanceKm * rate.perKm + durationMinutes * rate.perMin;
+    // Always round up calculated fares to next whole dollar unit
+    return Math.max(Math.ceil(rate.base), Math.ceil(computed));
   };
 
   const formatPrice = (usd: number) => {
     if (currency === 'ZWG') {
-      return `ZWG ${(usd * 26.85).toFixed(2)}`;
+      const zwg = Math.ceil(usd * 26.85);
+      return `ZWG ${zwg}`;
     }
-    return `$${usd.toFixed(2)}`;
+    return `$${Math.ceil(usd).toFixed(2)}`;
+  };
+
+  const handleSwapCalculatorLocations = () => {
+    const temp = pickupLocation;
+    setPickupLocation(dropoffLocation);
+    setDropoffLocation(temp);
   };
 
   const faqs = [
@@ -147,7 +178,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             </div>
           </div>
 
-          {/* Right Column: Live Fare Estimation & Booking Card */}
+          {/* Right Column: Live Fare Estimation & Booking Card with Mapbox Search */}
           <div className="lg:col-span-5">
             <div className="bg-white text-slate-900 rounded-2xl p-5 sm:p-6 shadow-2xl border border-slate-100 space-y-4">
               <div className="flex items-center justify-between border-b border-slate-100 pb-3">
@@ -157,55 +188,36 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   </div>
                   <div>
                     <h3 className="font-bold text-sm text-slate-900">Instant Fare Calculator</h3>
-                    <p className="text-[11px] text-slate-500">Live bilateral estimates for Zimbabwe</p>
+                    <p className="text-[11px] text-slate-500">Mapbox Geocoding & Route Estimator</p>
                   </div>
                 </div>
                 <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  ACTIVE
+                  MAPBOX LIVE
                 </span>
               </div>
 
-              {/* Pickup & Destination Inputs */}
-              <div className="space-y-2.5 text-xs">
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1 flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                    <span>Pickup Location</span>
-                  </label>
-                  <select
-                    value={estimatePickup}
-                    onChange={(e) => setEstimatePickup(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs font-medium text-slate-900 focus:outline-none focus:border-sky-600"
-                  >
-                    <option>Harare CBD (First St & Nelson Mandela)</option>
-                    <option>Avondale Shopping Centre</option>
-                    <option>Borrowdale Village (Sam Levy)</option>
-                    <option>Belgrave / Belgravia Offices</option>
-                    <option>Robert Gabriel Mugabe Int. Airport</option>
-                    <option>Bulawayo CBD (Jason Moyo St)</option>
-                    <option>Bulawayo Hillside Shopping Centre</option>
-                  </select>
-                </div>
+              {/* Pickup & Destination Mapbox Geocoding Search */}
+              <div className="space-y-3 text-xs">
+                <MapboxLocationSearchInput
+                  id="landing-pickup-search"
+                  label="Pickup Location"
+                  type="pickup"
+                  city={calculatorCity}
+                  value={pickupLocation}
+                  onChange={(loc) => setPickupLocation(loc)}
+                  placeholder={`Search ${calculatorCity} pickup address or landmark...`}
+                />
 
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1 flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-amber-500"></span>
-                    <span>Destination</span>
-                  </label>
-                  <select
-                    value={estimateDropoff}
-                    onChange={(e) => setEstimateDropoff(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs font-medium text-slate-900 focus:outline-none focus:border-sky-600"
-                  >
-                    <option>Borrowdale Village (Sam Levy)</option>
-                    <option>Harare CBD (First St & Nelson Mandela)</option>
-                    <option>Robert Gabriel Mugabe Int. Airport</option>
-                    <option>Westgate Shopping Complex</option>
-                    <option>Chitungwiza Town Centre</option>
-                    <option>Bulawayo JMN Nkomo Airport</option>
-                    <option>Bulawayo Ascot Shopping Complex</option>
-                  </select>
-                </div>
+                <MapboxLocationSearchInput
+                  id="landing-dest-search"
+                  label="Destination"
+                  type="destination"
+                  city={calculatorCity}
+                  value={dropoffLocation}
+                  onChange={(loc) => setDropoffLocation(loc)}
+                  onSwap={handleSwapCalculatorLocations}
+                  placeholder={`Search ${calculatorCity} destination point...`}
+                />
 
                 {/* Vehicle Class Selector */}
                 <div>
@@ -235,7 +247,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 </div>
               </div>
 
-              {/* Estimated Price Box */}
+              {/* Estimated Price Box with Dynamic Mapbox Distance & Duration */}
               <div className="bg-slate-950 text-white rounded-xl p-3.5 flex items-center justify-between">
                 <div>
                   <span className="text-[10px] uppercase font-mono text-amber-400 font-bold block">
@@ -244,7 +256,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   <div className="flex items-baseline gap-1.5 mt-0.5">
                     <span className="text-xl font-black text-white">{formatPrice(getEstimatedFareUSD())}</span>
                     <span className="text-[10px] text-slate-400 font-mono">
-                      (Approx. 9.4 km • 18 min)
+                      (Approx. {distanceKm} km • {durationMinutes} min)
                     </span>
                   </div>
                 </div>

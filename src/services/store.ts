@@ -204,7 +204,9 @@ class Store {
     const distanceKm = Number((Math.sqrt(dLat * dLat + dLng * dLng) + 1.2).toFixed(1));
     const estimatedDurationMin = Math.max(8, Math.round(distanceKm * 2.2));
     
-    const upfrontEstimateUSD = Number((pricing.baseFareUSD + distanceKm * pricing.perKmUSD + estimatedDurationMin * pricing.perMinuteUSD).toFixed(2));
+    const rawEstimate = pricing.baseFareUSD + distanceKm * pricing.perKmUSD + estimatedDurationMin * pricing.perMinuteUSD;
+    // Always round up calculated fees to next whole dollar unit
+    const upfrontEstimateUSD = Math.max(Math.ceil(pricing.baseFareUSD), Math.ceil(rawEstimate));
 
     const newTrip: Trip = {
       id: `trp-${Date.now()}`,
@@ -249,7 +251,7 @@ class Store {
     availableDrivers.slice(0, 2).forEach((driver, idx) => {
       const isCounter = idx % 2 === 1;
       const offeredAmount = isCounter
-        ? Number((this.state.activeTrip!.proposedFareUSD + 1.50).toFixed(2))
+        ? Math.ceil(this.state.activeTrip!.proposedFareUSD + 2.00)
         : this.state.activeTrip!.proposedFareUSD;
 
       const offer: FareOffer = {

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Car,
   MapPin,
@@ -25,12 +25,22 @@ import {
   CheckCircle2,
   TrendingUp,
   Activity,
-  LogOut
+  LogOut,
+  Crosshair,
+  Loader2,
+  Navigation,
+  Compass
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { store } from '../../services/store';
 import { MapVisualizer } from '../common/MapVisualizer';
-import { searchMapboxPlaces, MapboxPlace } from '../../services/mapboxService';
+import { MapboxLocationSearchInput } from '../common/MapboxLocationSearchInput';
+import {
+  searchMapboxPlaces,
+  MapboxPlace,
+  reverseGeocodeCoordinates,
+  findNearestLandmark
+} from '../../services/mapboxService';
 import {
   Currency,
   Language,
@@ -69,13 +79,10 @@ export const RiderApp: React.FC<RiderAppProps> = ({ currency, language }) => {
   const [proposedFareUSD, setProposedFareUSD] = useState<number>(6.0);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('ecocash');
 
-  // Mapbox Geocoding & Autocomplete State
-  const [pickupSearchText, setPickupSearchText] = useState(locationOptions[0].address);
-  const [destSearchText, setDestSearchText] = useState(locationOptions[2].address);
-  const [pickupSuggestions, setPickupSuggestions] = useState<MapboxPlace[]>([]);
-  const [destSuggestions, setDestSuggestions] = useState<MapboxPlace[]>([]);
-  const [isPickupOpen, setIsPickupOpen] = useState(false);
-  const [isDestOpen, setIsDestOpen] = useState(false);
+  // GPS Auto-Detection & Geolocation States
+  const [isDetectingGps, setIsDetectingGps] = useState<boolean>(false);
+  const [gpsStatus, setGpsStatus] = useState<string | null>(null);
+  const [isGpsActive, setIsGpsActive] = useState<boolean>(false);
 
   // UI Modals
   const [showChatModal, setShowChatModal] = useState(false);
@@ -90,24 +97,77 @@ export const RiderApp: React.FC<RiderAppProps> = ({ currency, language }) => {
   const [sosSubmitted, setSosSubmitted] = useState(false);
   const [shareToast, setShareToast] = useState(false);
 
-  // Currency Converter Helper
+  // Auto-detect GPS on component mount
+  useEffect(() => {
+    autoDetectGpsLocation(true);
+  }, []);
+
+  const autoDetectGpsLocation = async (silent: boolean = false) => {
+    if (!navigator.geolocation) {
+      if (!silent) alert('Geolocation is not supported by your device / browser.');
+      return;
+    }
+
+    setIsDetectingGps(true);
+    if (!silent) {
+      setGpsStatus('Acquiring high-precision GPS coordinates...');
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude } = pos.coords;
+        try {
+          const resolved = await reverseGeocodeCoordinates(latitude, longitude);
+          setPickup(resolved);
+          setIsGpsActive(true);
+          setGpsStatus(`GPS Active: ${resolved.address}`);
+          if (resolved.city && resolved.city !== city) {
+            setCity(resolved.city);
+          }
+        } catch (err) {
+          console.warn('GPS geocode failed:', err);
+          const fallbackLoc: LocationPoint = {
+            address: `GPS Location (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`,
+            neighborhood: 'Current Sector',
+            city,
+            lat: latitude,
+            lng: longitude
+          };
+          setPickup(fallbackLoc);
+          setIsGpsActive(true);
+          setGpsStatus(`GPS Fixed: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
+        } finally {
+          setIsDetectingGps(false);
+        }
+      },
+      (err) => {
+        console.warn('Geolocation error or permission denied:', err);
+        setIsDetectingGps(false);
+        if (!silent) {
+          setGpsStatus('GPS permission unavailable. Please search or pick a landmark below.');
+        }
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+    );
+  };
+
+  // Currency Converter Helper (fees rounded up)
   const formatMoney = (amountUSD: number) => {
     if (currency === 'ZWG') {
-      const zwg = amountUSD * state.settings.exchangeRateUSDToZWG;
-      return `${zwg.toFixed(1)} ZiG`;
+      const zwg = Math.ceil(amountUSD * state.settings.exchangeRateUSDToZWG);
+      return `${zwg} ZiG`;
     }
     return `$${amountUSD.toFixed(2)}`;
   };
 
-  // Upfront Estimate Calculator
+  // Upfront Estimate Calculator - Always rounded up to next whole dollar unit
   const currentPricing = state.pricingConfigs.find((p) => p.category === category) || state.pricingConfigs[0];
   const dLat = Math.abs(pickup.lat - destination.lat) * 111;
   const dLng = Math.abs(pickup.lng - destination.lng) * 111 * Math.cos((pickup.lat * Math.PI) / 180);
   const distanceKm = Number((Math.sqrt(dLat * dLat + dLng * dLng) + 1.2).toFixed(1));
   const estMinutes = Math.max(8, Math.round(distanceKm * 2.2));
-  const estimatedFareUSD = Number(
-    (currentPricing.baseFareUSD + distanceKm * currentPricing.perKmUSD + estMinutes * currentPricing.perMinuteUSD).toFixed(2)
-  );
+  const rawFare = currentPricing.baseFareUSD + distanceKm * currentPricing.perKmUSD + estMinutes * currentPricing.perMinuteUSD;
+  const estimatedFareUSD = Math.max(Math.ceil(currentPricing.baseFareUSD), Math.ceil(rawFare));
 
   const handleCityChange = (newCity: string) => {
     setCity(newCity);
@@ -117,72 +177,16 @@ export const RiderApp: React.FC<RiderAppProps> = ({ currency, language }) => {
     ];
     setPickup(locs[0]);
     setDestination(locs[1] || locs[0]);
-    setPickupSearchText(locs[0].address);
-    setDestSearchText((locs[1] || locs[0]).address);
-  };
-
-  const handlePickupSearchChange = (text: string) => {
-    setPickupSearchText(text);
-    if (text.trim().length > 1) {
-      const res = searchMapboxPlaces(text, city);
-      setPickupSuggestions(res.slice(0, 5));
-      setIsPickupOpen(true);
-    } else {
-      setPickupSuggestions([]);
-      setIsPickupOpen(false);
-    }
-  };
-
-  const handleDestSearchChange = (text: string) => {
-    setDestSearchText(text);
-    if (text.trim().length > 1) {
-      const res = searchMapboxPlaces(text, city);
-      setDestSuggestions(res.slice(0, 5));
-      setIsDestOpen(true);
-    } else {
-      setDestSuggestions([]);
-      setIsDestOpen(false);
-    }
-  };
-
-  const handleSelectPickup = (place: MapboxPlace) => {
-    const loc: LocationPoint = {
-      address: place.name,
-      neighborhood: place.neighborhood,
-      city: place.city,
-      lat: place.lat,
-      lng: place.lng
-    };
-    setPickup(loc);
-    setPickupSearchText(place.name);
-    setIsPickupOpen(false);
-  };
-
-  const handleSelectDest = (place: MapboxPlace) => {
-    const loc: LocationPoint = {
-      address: place.name,
-      neighborhood: place.neighborhood,
-      city: place.city,
-      lat: place.lat,
-      lng: place.lng
-    };
-    setDestination(loc);
-    setDestSearchText(place.name);
-    setIsDestOpen(false);
   };
 
   const handleUseCurrentLocation = () => {
-    const currentLoc = (CITY_LOCATIONS_MAP[city] && CITY_LOCATIONS_MAP[city][0]) || locationOptions[0];
-    setPickup(currentLoc);
-    setPickupSearchText(currentLoc.address);
+    autoDetectGpsLocation(false);
   };
 
   const handleSwapLocations = () => {
     const temp = pickup;
     setPickup(destination);
     setDestination(temp);
-    setPickupSearchText(destination.address);
-    setDestSearchText(pickup.address);
   };
 
   const handleRequestRide = () => {
@@ -352,141 +356,120 @@ export const RiderApp: React.FC<RiderAppProps> = ({ currency, language }) => {
             </div>
           </div>
 
-          {/* Pickup & Destination Pickers with Mapbox Geocoding Autocomplete */}
-          <div className="space-y-2">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 relative">
-              {/* Pickup Input */}
-              <div className="space-y-1 relative">
-                <div className="flex items-center justify-between">
-                  <label className="text-[11px] font-bold text-slate-700 uppercase tracking-tight flex items-center gap-1">
-                    <MapPin className="w-3 h-3 text-emerald-600" />
-                    <span>Pickup Location</span>
-                  </label>
-                  <button
-                    type="button"
-                    onClick={handleUseCurrentLocation}
-                    className="text-[10px] text-sky-700 hover:text-sky-900 font-bold flex items-center gap-0.5"
-                  >
-                    <span>Use GPS</span>
-                  </button>
-                </div>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={pickupSearchText}
-                    onChange={(e) => handlePickupSearchChange(e.target.value)}
-                    onFocus={() => {
-                      setIsPickupOpen(true);
-                      setIsDestOpen(false);
-                      if (pickupSearchText.length > 1) {
-                        setPickupSuggestions(searchMapboxPlaces(pickupSearchText, city).slice(0, 5));
-                      }
-                    }}
-                    placeholder={`Search ${city} pickup via Mapbox...`}
-                    className="w-full bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-sky-600 focus:bg-white font-medium"
-                  />
-                  <span className="absolute right-2 top-1.5 text-[8px] font-bold font-mono text-slate-400">
-                    MAPBOX
-                  </span>
-                </div>
-
-                {/* Pickup Autocomplete Dropdown */}
-                {isPickupOpen && (
-                  <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-50 divide-y divide-slate-100 max-h-56 overflow-y-auto">
-                    <div className="p-1.5 bg-slate-50 border-b border-slate-100 text-[9px] font-bold text-slate-500 uppercase tracking-wider flex justify-between">
-                      <span>Mapbox Search Results</span>
-                      <button onClick={() => setIsPickupOpen(false)} className="text-slate-400 hover:text-slate-600">✕</button>
-                    </div>
-                    {(pickupSuggestions.length > 0 ? pickupSuggestions : searchMapboxPlaces('', city).slice(0, 4)).map((place) => (
-                      <button
-                        key={place.id}
-                        type="button"
-                        onClick={() => handleSelectPickup(place)}
-                        className="w-full text-left px-3 py-2 hover:bg-sky-50 transition-colors flex items-center justify-between gap-2"
-                      >
-                        <div className="min-w-0">
-                          <p className="text-xs font-bold text-slate-900 truncate">{place.name}</p>
-                          <p className="text-[10px] text-slate-500 truncate">{place.address} • {place.neighborhood}</p>
-                        </div>
-                        <span className="text-[8px] uppercase font-mono px-1 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
-                          {place.category}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
+          {/* GPS Auto-Detection & Location Guide Banner */}
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className={`p-1.5 rounded-full ${isGpsActive ? 'bg-emerald-100 text-emerald-700' : 'bg-sky-100 text-sky-700'}`}>
+                {isDetectingGps ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Crosshair className="w-3.5 h-3.5" />
                 )}
               </div>
-
-              {/* Destination Input */}
-              <div className="space-y-1 relative">
-                <div className="flex items-center justify-between">
-                  <label className="text-[11px] font-bold text-slate-700 uppercase tracking-tight flex items-center gap-1">
-                    <MapPin className="w-3 h-3 text-rose-600" />
-                    <span>Destination Point</span>
-                  </label>
-                  <button
-                    type="button"
-                    onClick={handleSwapLocations}
-                    className="text-[10px] text-slate-500 hover:text-slate-800 font-bold"
-                  >
-                    ⇄ Swap
-                  </button>
-                </div>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={destSearchText}
-                    onChange={(e) => handleDestSearchChange(e.target.value)}
-                    onFocus={() => {
-                      setIsDestOpen(true);
-                      setIsPickupOpen(false);
-                      if (destSearchText.length > 1) {
-                        setDestSuggestions(searchMapboxPlaces(destSearchText, city).slice(0, 5));
-                      }
-                    }}
-                    placeholder={`Search ${city} destination via Mapbox...`}
-                    className="w-full bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-sky-600 focus:bg-white font-medium"
-                  />
-                  <span className="absolute right-2 top-1.5 text-[8px] font-bold font-mono text-slate-400">
-                    MAPBOX
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] font-bold text-slate-800">
+                    {isDetectingGps
+                      ? 'Acquiring GPS Coordinates...'
+                      : isGpsActive
+                      ? 'GPS Auto-Detected Pickup'
+                      : 'Pickup Location Ready'}
                   </span>
+                  {isGpsActive && (
+                    <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800">
+                      LIVE GPS
+                    </span>
+                  )}
                 </div>
-
-                {/* Destination Autocomplete Dropdown */}
-                {isDestOpen && (
-                  <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-50 divide-y divide-slate-100 max-h-56 overflow-y-auto">
-                    <div className="p-1.5 bg-slate-50 border-b border-slate-100 text-[9px] font-bold text-slate-500 uppercase tracking-wider flex justify-between">
-                      <span>Mapbox Search Results</span>
-                      <button onClick={() => setIsDestOpen(false)} className="text-slate-400 hover:text-slate-600">✕</button>
-                    </div>
-                    {(destSuggestions.length > 0 ? destSuggestions : searchMapboxPlaces('', city).slice(0, 4)).map((place) => (
-                      <button
-                        key={place.id}
-                        type="button"
-                        onClick={() => handleSelectDest(place)}
-                        className="w-full text-left px-3 py-2 hover:bg-sky-50 transition-colors flex items-center justify-between gap-2"
-                      >
-                        <div className="min-w-0">
-                          <p className="text-xs font-bold text-slate-900 truncate">{place.name}</p>
-                          <p className="text-[10px] text-slate-500 truncate">{place.address} • {place.neighborhood}</p>
-                        </div>
-                        <span className="text-[8px] uppercase font-mono px-1 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
-                          {place.category}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
+                <p className="text-[10px] text-slate-500 truncate">
+                  {gpsStatus || 'Type any landmark, shopping centre, growth point, or street below'}
+                </p>
               </div>
             </div>
 
-            {/* Mapbox Route Telemetry Badge */}
-            <div className="flex items-center justify-between bg-sky-50/70 border border-sky-100 rounded px-2.5 py-1 text-[10px] text-sky-900 font-mono">
-              <span className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-sky-600 animate-pulse" />
-                <span>Mapbox Traffic Engine: <strong>{distanceKm} km</strong> (~{estMinutes} mins)</span>
+            <button
+              type="button"
+              onClick={() => autoDetectGpsLocation(false)}
+              disabled={isDetectingGps}
+              className="text-[11px] font-bold text-sky-800 hover:text-sky-950 bg-white hover:bg-sky-50 px-2.5 py-1 rounded border border-sky-200 shadow-2xs flex items-center gap-1.5 transition-colors shrink-0"
+            >
+              {isDetectingGps ? (
+                <Loader2 className="w-3 h-3 animate-spin text-sky-700" />
+              ) : (
+                <Navigation className="w-3 h-3 text-sky-700" />
+              )}
+              <span>{isDetectingGps ? 'Locating...' : 'Auto-Detect My GPS'}</span>
+            </button>
+          </div>
+
+          {/* Pickup & Destination Mapbox Geocoding Search */}
+          <div className="space-y-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Pickup Mapbox Search */}
+              <MapboxLocationSearchInput
+                id="pickup-mapbox-search"
+                label="Pickup Location"
+                type="pickup"
+                city={city}
+                value={pickup}
+                onChange={(newLoc) => {
+                  setPickup(newLoc);
+                  setIsGpsActive(false);
+                }}
+                onUseGps={handleUseCurrentLocation}
+                placeholder={`Type place, landmark, shop or street in ${city}...`}
+              />
+
+              {/* Destination Mapbox Search */}
+              <MapboxLocationSearchInput
+                id="dest-mapbox-search"
+                label="Destination Point"
+                type="destination"
+                city={city}
+                value={destination}
+                onChange={(newLoc) => setDestination(newLoc)}
+                onSwap={handleSwapLocations}
+                placeholder={`Type destination, mall, complex or township in ${city}...`}
+              />
+            </div>
+
+            {/* Quick Zimbabwe Township & Landmark Shortcuts */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between text-[10px] text-slate-500 font-medium">
+                <span>Quick Landmarks & Growth Points:</span>
+                <span className="text-[9px] text-slate-400">Tap to set as destination</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { name: 'KwaKamunhu (Mabvuku)', loc: { address: 'KwaKamunhu Shopping Centre', neighborhood: 'Mabvuku', city: 'Harare', lat: -17.8488, lng: 31.1872 } },
+                  { name: 'Sam Levy’s Village', loc: { address: 'Sam Levy\'s Village, Borrowdale', neighborhood: 'Borrowdale', city: 'Harare', lat: -17.7554, lng: 31.0872 } },
+                  { name: 'Machipisa (Highfield)', loc: { address: 'Machipisa Shopping Centre', neighborhood: 'Highfield', city: 'Harare', lat: -17.8872, lng: 31.0025 } },
+                  { name: 'Joina City Mall', loc: { address: 'Joina City Mall, Jason Moyo Ave', neighborhood: 'Harare CBD', city: 'Harare', lat: -17.8308, lng: 31.0488 } },
+                  { name: 'PaMereki (Warren Park)', loc: { address: 'Mereki Braai Centre', neighborhood: 'Warren Park D', city: 'Harare', lat: -17.8385, lng: 30.9782 } },
+                  { name: 'Makoni (Chitungwiza)', loc: { address: 'Makoni Shopping Centre', neighborhood: 'Seke', city: 'Chitungwiza', lat: -18.0085, lng: 31.0821 } },
+                  { name: 'Majuru (Goromonzi)', loc: { address: 'Majuru Growth Point & Shopping Centre', neighborhood: 'Goromonzi District', city: 'Goromonzi', lat: -17.8167, lng: 31.4167 } }
+                ].map((item, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setDestination(item.loc)}
+                    className="text-[10px] font-medium bg-slate-100 hover:bg-sky-100 hover:text-sky-950 text-slate-700 px-2 py-0.5 rounded border border-slate-200 transition-colors truncate"
+                  >
+                    {item.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Mapbox Route Telemetry & Traffic Speed */}
+            <div className="flex flex-wrap items-center justify-between gap-2 bg-sky-50/80 border border-sky-200 rounded-lg px-3 py-1.5 text-[10px] text-sky-950 font-mono">
+              <div className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span>Mapbox Live Driving Engine: <strong>{distanceKm} km</strong> (~{estMinutes} mins drive)</span>
+              </div>
+              <span className="text-slate-500 font-sans text-[10px]">
+                {pickup.neighborhood} → {destination.neighborhood}
               </span>
-              <span className="text-slate-500">Harare / Bulawayo GIS</span>
             </div>
           </div>
 
@@ -551,31 +534,31 @@ export const RiderApp: React.FC<RiderAppProps> = ({ currency, language }) => {
                 <span className="text-lg font-mono font-extrabold text-slate-900">{formatMoney(proposedFareUSD)}</span>
                 {currency === 'USD' && (
                   <span className="text-[10px] font-mono text-slate-400 block">
-                    ~{(proposedFareUSD * state.settings.exchangeRateUSDToZWG).toFixed(1)} ZiG
+                    ~{Math.ceil(proposedFareUSD * state.settings.exchangeRateUSDToZWG)} ZiG (Rounded)
                   </span>
                 )}
               </div>
               <button
-                onClick={() => setProposedFareUSD((p) => Number((p + 0.5).toFixed(2)))}
+                onClick={() => setProposedFareUSD((p) => Math.ceil(p + 1.0))}
                 className="w-9 h-9 rounded bg-white border border-slate-300 text-slate-800 font-bold text-sm hover:bg-slate-100 flex items-center justify-center shadow-xs"
               >
                 +
               </button>
             </div>
 
-            {/* Quick Pricing Chips */}
+            {/* Quick Pricing Chips - Always Rounded Up */}
             <div className="flex gap-1.5">
-              {[estimatedFareUSD - 1, estimatedFareUSD, estimatedFareUSD + 1.5, estimatedFareUSD + 3].map((price, idx) => (
+              {[Math.max(2, estimatedFareUSD - 1), estimatedFareUSD, estimatedFareUSD + 2, estimatedFareUSD + 4].map((price, idx) => (
                 <button
                   key={idx}
-                  onClick={() => setProposedFareUSD(Math.max(2, Number(price.toFixed(2))))}
+                  onClick={() => setProposedFareUSD(Math.max(2, Math.ceil(price)))}
                   className={`flex-1 py-1 rounded border text-[11px] font-mono font-bold ${
-                    proposedFareUSD === Number(price.toFixed(2))
+                    proposedFareUSD === Math.ceil(price)
                       ? 'bg-amber-400 text-slate-950 border-amber-400 font-black'
                       : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
                   }`}
                 >
-                  ${price.toFixed(2)}
+                  ${Math.ceil(price).toFixed(2)}
                 </button>
               ))}
             </div>

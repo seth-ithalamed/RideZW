@@ -80,13 +80,13 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
   // Cash Collection Modal
   const [showCashCollectModal, setShowCashCollectModal] = useState(false);
 
-  // Format money helper
+  // Format money helper (fees rounded up)
   const formatMoney = (amountUSD: number) => {
     if (currency === 'ZWG') {
-      const zwg = amountUSD * state.settings.exchangeRateUSDToZWG;
-      return `${zwg.toFixed(1)} ZiG`;
+      const zwg = Math.ceil(amountUSD * state.settings.exchangeRateUSDToZWG);
+      return `${zwg} ZiG`;
     }
-    return `$${amountUSD.toFixed(2)}`;
+    return `$${Math.ceil(amountUSD).toFixed(2)}`;
   };
 
   // Find linked government permit from registry
@@ -426,7 +426,7 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
 
                 <button
                   onClick={() => {
-                    setCustomCounter(activeTrip.proposedFareUSD + 1.5);
+                    setCustomCounter(Math.ceil(activeTrip.proposedFareUSD + 2.0));
                     setShowCounterInput(true);
                   }}
                   className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 font-bold text-xs rounded shadow-xs flex items-center justify-center gap-1.5"
@@ -441,16 +441,16 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
                 <div className="p-3 bg-slate-50 rounded border border-indigo-200 space-y-2">
                   <div className="flex items-center justify-between">
                     <label className="text-[11px] font-bold text-slate-700">Your Counter Price (USD):</label>
-                    <span className="text-sm font-mono font-bold text-indigo-600">${customCounter.toFixed(2)}</span>
+                    <span className="text-sm font-mono font-bold text-indigo-600">${Math.ceil(customCounter).toFixed(2)}</span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     {[1, 2, 3].map((bump) => (
                       <button
                         key={bump}
-                        onClick={() => setCustomCounter(Number((activeTrip.proposedFareUSD + bump).toFixed(2)))}
+                        onClick={() => setCustomCounter(Math.ceil(activeTrip.proposedFareUSD + bump))}
                         className="flex-1 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded font-mono font-bold text-xs"
                       >
-                        +${bump}.00 (${(activeTrip.proposedFareUSD + bump).toFixed(2)})
+                        +${bump}.00 (${Math.ceil(activeTrip.proposedFareUSD + bump).toFixed(2)})
                       </button>
                     ))}
                   </div>
@@ -486,6 +486,50 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
                 <div className="text-right">
                   <span className="text-[10px] text-slate-400 uppercase font-bold">Agreed Fare</span>
                   <span className="text-base font-mono font-bold text-emerald-700">{formatMoney(activeTrip.agreedFareUSD)}</span>
+                </div>
+              </div>
+
+              {/* GPS Coordinates & Live Turn-by-Turn Navigation Trigger */}
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 space-y-2">
+                <div className="flex items-center justify-between text-[11px]">
+                  <div className="flex items-center gap-1.5 text-slate-700 font-bold">
+                    <Navigation className="w-3.5 h-3.5 text-sky-600" />
+                    <span>Target: {activeTrip.status === 'driver_arriving' ? 'Pickup Point' : 'Destination Point'}</span>
+                  </div>
+                  <span className="font-mono text-[10px] text-slate-500">
+                    {activeTrip.status === 'driver_arriving'
+                      ? `${activeTrip.pickup.lat.toFixed(4)}, ${activeTrip.pickup.lng.toFixed(4)}`
+                      : `${activeTrip.destination.lat.toFixed(4)}, ${activeTrip.destination.lng.toFixed(4)}`}
+                  </span>
+                </div>
+
+                <div className="flex gap-2">
+                  <a
+                    href={`https://www.google.com/maps/dir/?api=1&destination=${
+                      activeTrip.status === 'driver_arriving'
+                        ? `${activeTrip.pickup.lat},${activeTrip.pickup.lng}`
+                        : `${activeTrip.destination.lat},${activeTrip.destination.lng}`
+                    }&travelmode=driving`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex-1 py-1.5 px-2 bg-sky-600 hover:bg-sky-700 text-white rounded text-center text-xs font-bold flex items-center justify-center gap-1 shadow-2xs"
+                  >
+                    <Navigation className="w-3.5 h-3.5" />
+                    <span>Open Google Maps GPS</span>
+                  </a>
+
+                  <a
+                    href={`https://waze.com/ul?ll=${
+                      activeTrip.status === 'driver_arriving'
+                        ? `${activeTrip.pickup.lat},${activeTrip.pickup.lng}`
+                        : `${activeTrip.destination.lat},${activeTrip.destination.lng}`
+                    }&navigate=yes`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="py-1.5 px-3 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded text-center text-xs font-bold flex items-center justify-center gap-1"
+                  >
+                    <span>Waze</span>
+                  </a>
                 </div>
               </div>
 

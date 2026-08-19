@@ -31,7 +31,7 @@ interface MapVisualizerProps {
   height?: string;
   interactive?: boolean;
   onSelectLocation?: (loc: LocationPoint) => void;
-  city?: 'Harare' | 'Bulawayo';
+  city?: string;
   showSearchBar?: boolean;
   showLayerToggle?: boolean;
   defaultStyle?: MapboxStyle;
@@ -59,11 +59,46 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
   const [isSearching, setIsSearching] = useState(false);
   const [activePin, setActivePin] = useState<{ x: number; y: number; address: string } | null>(null);
 
-  // Map coordinate bounds for Harare & Bulawayo
-  const bounds =
-    city === 'Harare'
-      ? { minLat: -17.95, maxLat: -17.74, minLng: 30.95, maxLng: 31.15 }
-      : { minLat: -20.22, maxLat: -20.00, minLng: 28.50, maxLng: 28.70 };
+  // Coordinate bounds with dynamic auto-framing for hyper-local locations & growth points
+  const cityBoundsMap: Record<string, { minLat: number; maxLat: number; minLng: number; maxLng: number }> = {
+    harare: { minLat: -17.95, maxLat: -17.74, minLng: 30.95, maxLng: 31.15 },
+    bulawayo: { minLat: -20.22, maxLat: -20.00, minLng: 28.50, maxLng: 28.70 },
+    'victoria falls': { minLat: -18.12, maxLat: -17.90, minLng: 25.80, maxLng: 25.88 },
+    mutare: { minLat: -19.02, maxLat: -18.94, minLng: 32.62, maxLng: 32.72 },
+    gweru: { minLat: -19.52, maxLat: -19.42, minLng: 29.78, maxLng: 29.86 },
+    chitungwiza: { minLat: -18.04, maxLat: -17.98, minLng: 31.02, maxLng: 31.10 },
+    masvingo: { minLat: -20.30, maxLat: -20.04, minLng: 30.80, maxLng: 30.95 }
+  };
+
+  const defaultBounds = cityBoundsMap[city.toLowerCase()] || cityBoundsMap['harare'];
+  
+  // Calculate dynamic bounding box if pickup and destination are outside default bounds
+  let bounds = defaultBounds;
+  const allPoints: Array<{ lat: number; lng: number }> = [];
+  if (pickup) allPoints.push({ lat: pickup.lat, lng: pickup.lng });
+  if (destination) allPoints.push({ lat: destination.lat, lng: destination.lng });
+  if (driverLocation) allPoints.push({ lat: driverLocation.lat, lng: driverLocation.lng });
+
+  if (allPoints.length > 0) {
+    const lats = allPoints.map((p) => p.lat);
+    const lngs = allPoints.map((p) => p.lng);
+    const minL = Math.min(...lats);
+    const maxL = Math.max(...lats);
+    const minG = Math.min(...lngs);
+    const maxG = Math.max(...lngs);
+
+    const latSpan = Math.max(0.04, (maxL - minL) * 1.35);
+    const lngSpan = Math.max(0.04, (maxG - minG) * 1.35);
+    const midLat = (minL + maxL) / 2;
+    const midLng = (minG + maxG) / 2;
+
+    bounds = {
+      minLat: midLat - latSpan / 2,
+      maxLat: midLat + latSpan / 2,
+      minLng: midLng - lngSpan / 2,
+      maxLng: midLng + lngSpan / 2
+    };
+  }
 
   const project = (lat: number, lng: number) => {
     const x = ((lng - bounds.minLng) / (bounds.maxLng - bounds.minLng)) * 100;
@@ -87,8 +122,7 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
   const handleSearchChange = (q: string) => {
     setSearchQuery(q);
     if (q.trim().length > 1) {
-      const activeCity: 'Harare' | 'Bulawayo' = city === 'Bulawayo' ? 'Bulawayo' : 'Harare';
-      const results = searchMapboxPlaces(q, activeCity);
+      const results = searchMapboxPlaces(q, city);
       setSearchResults(results.slice(0, 5));
       setIsSearching(true);
     } else {
