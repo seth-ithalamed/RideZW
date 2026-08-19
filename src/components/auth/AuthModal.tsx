@@ -112,33 +112,23 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           setIsSubmitting(false);
           return;
         }
-        // Login as admin
-        const admin = store.loginAsAdmin(signInIdentifier);
-        setSuccessMessage(`Welcome back, ${admin.name}! Entering Operations Suite...`);
-        setTimeout(() => {
-          setIsSubmitting(false);
-          onClose();
-        }, 800);
+        store.loginAsAdmin(signInIdentifier);
+        setIsSubmitting(false);
+        onClose();
         return;
       }
 
       if (selectedRole === 'driver') {
-        const driver = store.loginAsDriver(signInIdentifier);
-        setSuccessMessage(`Welcome, ${driver.name}! Opening Driver Cockpit...`);
-        setTimeout(() => {
-          setIsSubmitting(false);
-          onClose();
-        }, 800);
+        store.loginAsDriver(signInIdentifier);
+        setIsSubmitting(false);
+        onClose();
         return;
       }
 
       if (selectedRole === 'rider') {
-        const rider = store.loginAsRider(signInIdentifier);
-        setSuccessMessage(`Welcome, ${rider.name}! Opening Rider Booking App...`);
-        setTimeout(() => {
-          setIsSubmitting(false);
-          onClose();
-        }, 800);
+        store.loginAsRider(signInIdentifier);
+        setIsSubmitting(false);
+        onClose();
         return;
       }
     } catch (err: any) {
@@ -180,11 +170,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             insuranceExpiry: '2027-04-01'
           }
         });
-        setSuccessMessage(`Driver partner account created for ${fullName}! Opening Driver Cockpit...`);
-        setTimeout(() => {
-          setIsSubmitting(false);
-          onClose();
-        }, 800);
+        setIsSubmitting(false);
+        onClose();
       } else {
         if (!fullName.trim() || !phone.trim()) {
           setAuthError('Please enter your name and phone number.');
@@ -198,11 +185,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           email: email.trim() || undefined,
           city
         });
-        setSuccessMessage(`Rider account registered for ${fullName}! Opening Rider App...`);
-        setTimeout(() => {
-          setIsSubmitting(false);
-          onClose();
-        }, 800);
+        setIsSubmitting(false);
+        onClose();
       }
     } catch (err: any) {
       setAuthError(err.message || 'Registration failed.');

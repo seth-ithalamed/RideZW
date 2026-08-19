@@ -58,6 +58,7 @@ export default function App() {
         setLanguage={setLanguage}
         sosCount={activeSosCount}
         onLogout={handleLogout}
+        onOpenAuth={handleOpenAuth}
       />
 
       {/* Main Content Area */}
