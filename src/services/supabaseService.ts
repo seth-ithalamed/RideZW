@@ -469,6 +469,22 @@ export async function fetchAllDataFromSupabase(): Promise<{
       }));
     }
 
+    if (citiesRes.status === 'fulfilled' && citiesRes.value.data && citiesRes.value.data.length > 0) {
+      result.coverageCities = citiesRes.value.data.map((c: any) => ({
+        id: c.id,
+        name: c.name,
+        province: c.province,
+        status: c.status || 'active',
+        code: c.code,
+        centerLat: Number(c.center_lat),
+        centerLng: Number(c.center_lng),
+        radiusKm: Number(c.radius_km),
+        baseFareMultiplier: Number(c.base_fare_multiplier || 1.0),
+        supportedCategories: Array.isArray(c.supported_categories) ? c.supported_categories : ['economy', 'comfort'],
+        isPrimaryHub: Boolean(c.is_primary_hub)
+      }));
+    }
+
     if (settingsRes.status === 'fulfilled' && settingsRes.value.data && settingsRes.value.data.length > 0) {
       const s = settingsRes.value.data[0];
       result.settings = {

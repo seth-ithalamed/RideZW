@@ -145,13 +145,14 @@ app.get('/api/state', async (req, res) => {
 
   if (sb) {
     try {
-      const [tripsRes, driversRes, ridersRes, sosRes, ledgerRes, settingsRes] = await Promise.allSettled([
+      const [tripsRes, driversRes, ridersRes, sosRes, ledgerRes, settingsRes, citiesRes] = await Promise.allSettled([
         sb.from('trips').select('*').order('created_at', { ascending: false }).limit(50),
         sb.from('drivers').select('*'),
         sb.from('riders').select('*'),
         sb.from('sos_alerts').select('*').order('created_at', { ascending: false }).limit(20),
         sb.from('ledger_entries').select('*').order('created_at', { ascending: false }).limit(50),
-        sb.from('platform_settings').select('*').limit(1)
+        sb.from('platform_settings').select('*').limit(1),
+        sb.from('coverage_cities').select('*')
       ]);
 
       return res.json({
@@ -163,7 +164,8 @@ app.get('/api/state', async (req, res) => {
           riders: ridersRes.status === 'fulfilled' && ridersRes.value.data ? ridersRes.value.data : Array.from(serverDb.riders.values()),
           sosAlerts: sosRes.status === 'fulfilled' && sosRes.value.data ? sosRes.value.data : Array.from(serverDb.sosAlerts.values()),
           ledger: ledgerRes.status === 'fulfilled' && ledgerRes.value.data ? ledgerRes.value.data : Array.from(serverDb.ledgerEntries.values()),
-          settings: settingsRes.status === 'fulfilled' && settingsRes.value.data?.[0] ? settingsRes.value.data[0] : serverDb.platformSettings
+          settings: settingsRes.status === 'fulfilled' && settingsRes.value.data?.[0] ? settingsRes.value.data[0] : serverDb.platformSettings,
+          coverageCities: citiesRes.status === 'fulfilled' && citiesRes.value.data ? citiesRes.value.data : Array.from(serverDb.coverageCities.values())
         }
       });
     } catch (e: any) {
@@ -180,7 +182,8 @@ app.get('/api/state', async (req, res) => {
       riders: Array.from(serverDb.riders.values()),
       sosAlerts: Array.from(serverDb.sosAlerts.values()),
       ledger: Array.from(serverDb.ledgerEntries.values()),
-      settings: serverDb.platformSettings
+      settings: serverDb.platformSettings,
+      coverageCities: Array.from(serverDb.coverageCities.values())
     }
   });
 });

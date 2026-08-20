@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Phone,
@@ -18,6 +18,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { store } from '../../services/store';
+import { CoverageCity } from '../../types';
 import { RideZWLogo } from '../common/RideZWLogo';
 import { requestSmsOtp, verifySmsOtp } from '../../services/notificationService';
 
@@ -52,15 +53,31 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
+  // Coverage Cities dynamically from Database / Store
+  const [coverageCities, setCoverageCities] = useState<CoverageCity[]>(() => store.getState().coverageCities || []);
+
   // Sign Up States
   const [fullName, setFullName] = useState('');
   const [nationalId, setNationalId] = useState('');
   const [phone, setPhone] = useState('+263 77 ');
   const [email, setEmail] = useState('');
-  const [city, setCity] = useState<'Harare' | 'Bulawayo'>('Harare');
+  const [city, setCity] = useState<string>('Harare');
   const [vehicleMake, setVehicleMake] = useState('Toyota Passo');
   const [vehiclePlate, setVehiclePlate] = useState('AFE-8921');
   const [vehicleCategory, setVehicleCategory] = useState<'economy' | 'comfort' | 'xl' | 'motorbike'>('economy');
+
+  useEffect(() => {
+    const syncCities = () => {
+      const currentCities = store.getState().coverageCities || [];
+      setCoverageCities(currentCities);
+      if (currentCities.length > 0 && !currentCities.some((c) => c.name.toLowerCase() === city.toLowerCase())) {
+        setCity(currentCities[0].name);
+      }
+    };
+    syncCities();
+    const unsubscribe = store.subscribe(syncCities);
+    return () => unsubscribe();
+  }, [city]);
 
   if (!isOpen) return null;
 
@@ -187,7 +204,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           name: fullName.trim(),
           phone: phone.trim(),
           email: email.trim() || undefined,
-          city
+          city: 'Nationwide'
         });
         setIsSubmitting(false);
         onClose();
@@ -526,7 +543,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
+                  {selectedRole === 'rider' ? (
                     <div>
                       <label className="font-bold text-slate-700 block mb-1">Mobile Phone</label>
                       <input
@@ -538,18 +555,46 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                         className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs font-mono text-slate-900 focus:outline-none focus:border-sky-600"
                       />
                     </div>
-                    <div>
-                      <label className="font-bold text-slate-700 block mb-1">Operating Hub</label>
-                      <select
-                        value={city}
-                        onChange={(e) => setCity(e.target.value as any)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none focus:border-sky-600 font-medium"
-                      >
-                        <option value="Harare">Greater Harare</option>
-                        <option value="Bulawayo">Bulawayo Metro</option>
-                      </select>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="font-bold text-slate-700 block mb-1">Mobile Phone</label>
+                        <input
+                          type="tel"
+                          required
+                          placeholder="+263 77 ..."
+                          value={phone}
+                          onChange={(e) => setPhone(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs font-mono text-slate-900 focus:outline-none focus:border-sky-600"
+                        />
+                      </div>
+                      <div>
+                        <label className="font-bold text-slate-700 block mb-1">Operating Hub</label>
+                        <select
+                          value={city}
+                          onChange={(e) => setCity(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-slate-900 focus:outline-none focus:border-sky-600 font-medium"
+                        >
+                          {coverageCities.length > 0 ? (
+                            coverageCities.map((hub) => (
+                              <option key={hub.id} value={hub.name}>
+                                {hub.name} {hub.province ? `(${hub.province})` : ''} {hub.isPrimaryHub ? '★' : ''}
+                              </option>
+                            ))
+                          ) : (
+                            <>
+                              <option value="Harare">Harare (Harare Metropolitan)</option>
+                              <option value="Bulawayo">Bulawayo (Bulawayo Metropolitan)</option>
+                              <option value="Victoria Falls">Victoria Falls (Matabeleland North)</option>
+                              <option value="Mutare">Mutare (Manicaland)</option>
+                              <option value="Gweru">Gweru (Midlands)</option>
+                              <option value="Masvingo">Masvingo (Masvingo)</option>
+                            </>
+                          )}
+                        </select>
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   {selectedRole === 'driver' && (
                     <div className="space-y-3 pt-2 border-t border-slate-100">

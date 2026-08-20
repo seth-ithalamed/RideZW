@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Car,
   Smartphone,
@@ -21,10 +21,11 @@ import {
   Check,
   Compass
 } from 'lucide-react';
-import { Currency, Language, VehicleCategory, LocationPoint } from '../../types';
+import { Currency, Language, VehicleCategory, LocationPoint, CoverageCity } from '../../types';
 import { RideZWLogo } from '../common/RideZWLogo';
 import { MapboxLocationSearchInput } from '../common/MapboxLocationSearchInput';
 import { calculateMapboxRoute } from '../../services/mapboxService';
+import { store } from '../../services/store';
 
 interface LandingPageProps {
   currency: Currency;
@@ -37,6 +38,15 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   language,
   onOpenAuth
 }) => {
+  const [state, setState] = useState(store.getState());
+
+  useEffect(() => {
+    const unsubscribe = store.subscribe(() => {
+      setState(store.getState());
+    });
+    return () => unsubscribe();
+  }, []);
+
   const [calculatorCity, setCalculatorCity] = useState<string>('Harare');
   const [pickupLocation, setPickupLocation] = useState<LocationPoint>({
     address: 'First Mutual Tower, 95 Jason Moyo Ave',
@@ -367,136 +377,135 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       <section className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
           <div>
-            <h3 className="text-xl font-bold text-slate-900">Operating Across All Zimbabwean Cities & Hubs</h3>
-            <p className="text-xs text-slate-500">Live GPS tracking and vetted driver fleets across all national transit corridors</p>
+            <div className="flex items-center gap-2">
+              <h3 className="text-xl font-bold text-slate-900">Operating Across All Zimbabwean Cities & Hubs</h3>
+              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-900 border border-emerald-200">
+                LIVE DB FLEET
+              </span>
+            </div>
+            <p className="text-xs text-slate-500">
+              Real-time driver fleets queried directly from database • {store.getActiveDriversCount()} Online / {store.getTotalDriversCount()} Registered Nationwide
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="px-2.5 py-1 rounded bg-sky-100 text-sky-900 font-mono font-bold text-[11px]">
-              HARARE
-            </span>
-            <span className="px-2.5 py-1 rounded bg-amber-100 text-amber-900 font-mono font-bold text-[11px]">
-              BULAWAYO
-            </span>
-            <span className="px-2.5 py-1 rounded bg-emerald-100 text-emerald-900 font-mono font-bold text-[11px]">
-              VICTORIA FALLS
-            </span>
-            <span className="px-2.5 py-1 rounded bg-indigo-100 text-indigo-900 font-mono font-bold text-[11px]">
-              MUTARE
-            </span>
-            <span className="px-2.5 py-1 rounded bg-purple-100 text-purple-900 font-mono font-bold text-[11px]">
-              GWERU & NATIONWIDE
-            </span>
+            {(state.coverageCities || []).slice(0, 6).map((city) => {
+              const activeCount = store.getActiveDriversCount(city.name);
+              const isSelected = calculatorCity.toLowerCase() === city.name.toLowerCase();
+              return (
+                <button
+                  key={city.id}
+                  onClick={() => setCalculatorCity(city.name)}
+                  className={`px-2.5 py-1 rounded font-mono font-bold text-[11px] transition-all flex items-center gap-1.5 ${
+                    isSelected
+                      ? 'bg-amber-400 text-slate-950 shadow-xs ring-2 ring-amber-300'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                  }`}
+                  title={`Click to set ${city.name} in Fare Calculator`}
+                >
+                  <span>{city.name.toUpperCase()}</span>
+                  <span className={`text-[10px] px-1 py-0.2 rounded ${isSelected ? 'bg-slate-950 text-amber-300' : 'bg-slate-200 text-slate-700'}`}>
+                    {activeCount}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">🏛️</span>
-                <div>
-                  <h4 className="font-bold text-sm text-slate-900">Greater Harare & Chitungwiza</h4>
-                  <span className="text-[10px] font-mono text-slate-500">Zone 1 • Active</span>
-                </div>
-              </div>
-              <span className="text-[11px] font-mono font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
-                140+ Drivers
-              </span>
-            </div>
-            <p className="text-xs text-slate-600">
-              CBD, Borrowdale, Avondale, Westgate, Belgravia, Newlands, RGM International Airport, and Chitungwiza.
-            </p>
-          </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {(state.coverageCities || []).map((city, idx) => {
+            const activeCount = store.getActiveDriversCount(city.name);
+            const totalCount = store.getTotalDriversCount(city.name);
+            
+            // Dynamic City Icon / Emoji
+            const cityName = city.name.toLowerCase();
+            let emoji = '📍';
+            if (cityName.includes('harare')) emoji = '🏛️';
+            else if (cityName.includes('bulawayo')) emoji = '🌳';
+            else if (cityName.includes('victoria') || cityName.includes('falls')) emoji = '🌊';
+            else if (cityName.includes('mutare')) emoji = '⛰️';
+            else if (cityName.includes('gweru') || cityName.includes('kwekwe')) emoji = '🏭';
+            else if (cityName.includes('masvingo')) emoji = '🏰';
+            else if (cityName.includes('chinhoyi')) emoji = '🌄';
+            else if (cityName.includes('marondera')) emoji = '🌲';
 
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">🌳</span>
-                <div>
-                  <h4 className="font-bold text-sm text-slate-900">Bulawayo (City of Kings)</h4>
-                  <span className="text-[10px] font-mono text-slate-500">Zone 2 • Active</span>
-                </div>
-              </div>
-              <span className="text-[11px] font-mono font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
-                85+ Drivers
-              </span>
-            </div>
-            <p className="text-xs text-slate-600">
-              CBD, Hillside, Suburbs, Belmont Industrial, Ascot, Kumalo, and JMN International Airport.
-            </p>
-          </div>
+            // Dynamic Description
+            let desc = `${city.province || 'Provincial hub'}, key arterial routes, commercial centers, and residential corridors.`;
+            if (cityName.includes('harare')) {
+              desc = 'CBD, Borrowdale, Avondale, Westgate, Belgravia, Newlands, RGM International Airport, and Chitungwiza.';
+            } else if (cityName.includes('bulawayo')) {
+              desc = 'CBD, Hillside, Suburbs, Belmont Industrial, Ascot, Kumalo, and JMN International Airport.';
+            } else if (cityName.includes('victoria') || cityName.includes('falls')) {
+              desc = 'Rainforest Gate, Kingdom, Elephant Hills, Airport Road, and Zambezi River Front.';
+            } else if (cityName.includes('mutare')) {
+              desc = 'Mutare CBD, Main Street, Chikanga, Dangamvura, Christmas Pass, and Forbes Border.';
+            } else if (cityName.includes('gweru') || cityName.includes('kwekwe')) {
+              desc = 'Gweru CBD, Midlands State University (MSU), Mkoba, Kwekwe CBD, and Mbizo.';
+            } else if (cityName.includes('masvingo')) {
+              desc = 'Masvingo CBD, Great Zimbabwe monument route, Chinhoyi Caves route, and Marondera.';
+            }
 
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">🌊</span>
-                <div>
-                  <h4 className="font-bold text-sm text-slate-900">Victoria Falls & Tourism Hub</h4>
-                  <span className="text-[10px] font-mono text-slate-500">Zone 3 • Active</span>
-                </div>
-              </div>
-              <span className="text-[11px] font-mono font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
-                40+ Drivers
-              </span>
-            </div>
-            <p className="text-xs text-slate-600">
-              Rainforest Gate, Kingdom, Elephant Hills, Airport Road, and Zambezi River Front.
-            </p>
-          </div>
+            return (
+              <div
+                key={city.id}
+                onClick={() => setCalculatorCity(city.name)}
+                className={`bg-slate-50 hover:bg-slate-100/80 border transition-all cursor-pointer rounded-xl p-4 space-y-2.5 ${
+                  calculatorCity.toLowerCase() === city.name.toLowerCase()
+                    ? 'border-amber-400 ring-2 ring-amber-300/60 bg-amber-50/20'
+                    : 'border-slate-200'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl shrink-0">{emoji}</span>
+                    <div>
+                      <h4 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+                        <span>{city.name}</span>
+                        {city.isPrimaryHub && (
+                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-sky-100 text-sky-800 font-medium">
+                            Hub
+                          </span>
+                        )}
+                      </h4>
+                      <span className="text-[10px] font-mono text-slate-500">
+                        Zone {idx + 1} • {city.status === 'active' ? 'Active Network' : 'Coming Soon'}
+                      </span>
+                    </div>
+                  </div>
 
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">⛰️</span>
-                <div>
-                  <h4 className="font-bold text-sm text-slate-900">Mutare & Eastern Highlands</h4>
-                  <span className="text-[10px] font-mono text-slate-500">Zone 4 • Active</span>
+                  {/* Real-time DB Driver Count Badge */}
+                  <div className="shrink-0">
+                    {activeCount > 0 ? (
+                      <span className="text-[11px] font-mono font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded flex items-center gap-1.5 shadow-xs">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                        {activeCount} Active {activeCount === 1 ? 'Driver' : 'Drivers'}
+                      </span>
+                    ) : totalCount > 0 ? (
+                      <span className="text-[11px] font-mono font-bold text-sky-700 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-sky-500"></span>
+                        {totalCount} {totalCount === 1 ? 'Driver' : 'Drivers'} in Hub
+                      </span>
+                    ) : (
+                      <span className="text-[11px] font-mono text-slate-500 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded">
+                        0 Drivers (Recruiting)
+                      </span>
+                    )}
+                  </div>
                 </div>
-              </div>
-              <span className="text-[11px] font-mono font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
-                30+ Drivers
-              </span>
-            </div>
-            <p className="text-xs text-slate-600">
-              Mutare CBD, Main Street, Chikanga, Dangamvura, Christmas Pass, and Forbes Border.
-            </p>
-          </div>
 
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">🏭</span>
-                <div>
-                  <h4 className="font-bold text-sm text-slate-900">Midlands (Gweru & Kwekwe)</h4>
-                  <span className="text-[10px] font-mono text-slate-500">Zone 5 • Active</span>
-                </div>
-              </div>
-              <span className="text-[11px] font-mono font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
-                45+ Drivers
-              </span>
-            </div>
-            <p className="text-xs text-slate-600">
-              Gweru CBD, Midlands State University (MSU), Mkoba, Kwekwe CBD, and Mbizo.
-            </p>
-          </div>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  {desc}
+                </p>
 
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">🏰</span>
-                <div>
-                  <h4 className="font-bold text-sm text-slate-900">Masvingo & Provincial Hubs</h4>
-                  <span className="text-[10px] font-mono text-slate-500">Zone 6 • Active</span>
+                <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-[10px] font-mono text-slate-400">
+                  <span>Multiplier: {city.baseFareMultiplier}x</span>
+                  <span className="text-amber-700 font-semibold flex items-center gap-1">
+                    Calculate in {city.name} →
+                  </span>
                 </div>
               </div>
-              <span className="text-[11px] font-mono font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
-                25+ Drivers
-              </span>
-            </div>
-            <p className="text-xs text-slate-600">
-              Masvingo CBD, Great Zimbabwe monument route, Chinhoyi Caves route, and Marondera.
-            </p>
-          </div>
+            );
+          })}
         </div>
       </section>
 

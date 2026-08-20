@@ -204,6 +204,9 @@ class Store {
           if (supabaseData.settings) {
             this.state.settings = { ...this.state.settings, ...supabaseData.settings };
           }
+          if (supabaseData.coverageCities && supabaseData.coverageCities.length > 0) {
+            this.state.coverageCities = supabaseData.coverageCities;
+          }
           if (supabaseData.activeSessions) {
             this.state.activeSessions = supabaseData.activeSessions;
           }
@@ -233,6 +236,9 @@ class Store {
         }
         if (b.settings) {
           this.state.settings = { ...this.state.settings, ...b.settings };
+        }
+        if (b.coverageCities && b.coverageCities.length > 0) {
+          this.state.coverageCities = b.coverageCities;
         }
         this.notify();
       }
@@ -752,7 +758,7 @@ class Store {
     name: string;
     phone: string;
     email?: string;
-    city: 'Harare' | 'Bulawayo';
+    city?: string;
   }): RiderProfile {
     const newRider: RiderProfile = {
       id: `rdr-${Date.now().toString().slice(-6)}`,
@@ -769,7 +775,7 @@ class Store {
       preferredPaymentMethod: 'ecocash',
       referralCode: `RIDE-${params.name.slice(0, 3).toUpperCase()}${Math.floor(Math.random() * 89 + 10)}`,
       walletBalance: 0,
-      city: params.city,
+      city: params.city || 'Nationwide',
       status: 'active',
       accountType: 'standard',
       registeredAt: new Date().toISOString()
@@ -1315,7 +1321,7 @@ class Store {
       isBlockedDueToDebt: false,
       subscriptionTier: 'commission',
       kycStatus: 'approved',
-      city: params.city === 'Bulawayo' ? 'Bulawayo' : 'Harare',
+      city: params.city || 'Harare',
       documents: [],
       governmentPermitNumber: `ZW-MOT-2026-${Math.floor(Math.random() * 8999 + 1000)}`,
       governmentPermitStatus: 'valid',
@@ -1326,8 +1332,18 @@ class Store {
         id: `veh-${Date.now()}`,
         driverId
       },
-      currentLat: -17.8252,
-      currentLng: 31.0335,
+      currentLat: (() => {
+        const matchedCity = (this.state.coverageCities || []).find(
+          (c) => c.name.toLowerCase() === (params.city || '').toLowerCase()
+        );
+        return matchedCity?.centerLat || -17.8252;
+      })(),
+      currentLng: (() => {
+        const matchedCity = (this.state.coverageCities || []).find(
+          (c) => c.name.toLowerCase() === (params.city || '').toLowerCase()
+        );
+        return matchedCity?.centerLng || 31.0335;
+      })(),
       isOnline: true
     };
 
@@ -1351,11 +1367,14 @@ class Store {
 
   public getActiveDrivers(cityName?: string): DriverProfile[] {
     return (this.state.drivers || []).filter((d) => {
-      const isOnlineAndApproved = d.isOnline === true && d.kycStatus === 'approved' && !d.isBlockedDueToDebt;
+      const isOnlineAndApproved = d.isOnline === true && (!d.kycStatus || d.kycStatus === 'approved') && !d.isBlockedDueToDebt;
       if (!cityName || cityName.toLowerCase() === 'all') {
         return isOnlineAndApproved;
       }
-      return isOnlineAndApproved && d.city?.toLowerCase() === cityName.toLowerCase();
+      const search = cityName.toLowerCase().trim();
+      const driverCity = (d.city || '').toLowerCase().trim();
+      const matches = driverCity === search || driverCity.includes(search) || search.includes(driverCity);
+      return isOnlineAndApproved && matches;
     });
   }
 
@@ -1367,7 +1386,11 @@ class Store {
     if (!cityName || cityName.toLowerCase() === 'all') {
       return (this.state.drivers || []).length;
     }
-    return (this.state.drivers || []).filter((d) => d.city?.toLowerCase() === cityName.toLowerCase()).length;
+    const search = cityName.toLowerCase().trim();
+    return (this.state.drivers || []).filter((d) => {
+      const driverCity = (d.city || '').toLowerCase().trim();
+      return driverCity === search || driverCity.includes(search) || search.includes(driverCity);
+    }).length;
   }
 
   public getCityActiveDriversCount(cityName: string): number {
