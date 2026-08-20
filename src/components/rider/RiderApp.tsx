@@ -293,8 +293,8 @@ export const RiderApp: React.FC<RiderAppProps> = ({ currency, language }) => {
 
           {/* Logout Button */}
           <button
-            onClick={() => store.setActiveTab('landing')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold transition-all shadow-2xs"
+            onClick={() => store.logout()}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold transition-all shadow-2xs cursor-pointer"
             title="Log out of Rider Account"
           >
             <LogOut className="w-3.5 h-3.5 text-rose-600" />

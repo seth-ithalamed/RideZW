@@ -61,7 +61,16 @@ import {
 
 const STORAGE_KEY = 'ridezw_state_v1';
 
+export interface AuthenticatedUser {
+  role: 'rider' | 'driver' | 'admin';
+  id: string;
+  name: string;
+  emailOrPhone: string;
+  details?: string;
+}
+
 interface AppState {
+  authenticatedUser: AuthenticatedUser | null;
   rider: RiderProfile;
   riders: RiderProfile[];
   drivers: DriverProfile[];
@@ -169,6 +178,7 @@ class Store {
     }
 
     return {
+      authenticatedUser: null,
       rider: INITIAL_RIDER,
       riders: INITIAL_RIDERS,
       drivers: INITIAL_DRIVERS,
@@ -224,6 +234,16 @@ class Store {
     return this.state;
   }
 
+  public getAuthenticatedUser(): AuthenticatedUser | null {
+    return this.state.authenticatedUser || null;
+  }
+
+  public logout() {
+    this.state.authenticatedUser = null;
+    this.state.activeTab = 'landing';
+    this.saveState();
+  }
+
   public setActiveTab(tab: AppState['activeTab']) {
     this.state.activeTab = tab;
     this.saveState();
@@ -256,6 +276,12 @@ class Store {
       this.state.riders.unshift(rider);
     }
     this.state.rider = rider;
+    this.state.authenticatedUser = {
+      role: 'rider',
+      id: rider.id,
+      name: rider.name,
+      emailOrPhone: rider.phone
+    };
     this.state.activeTab = 'rider';
     this.saveState();
     return rider;
@@ -269,6 +295,13 @@ class Store {
       driver = this.state.drivers[0];
     }
     this.state.activeDriverId = driver.id;
+    this.state.authenticatedUser = {
+      role: 'driver',
+      id: driver.id,
+      name: driver.name,
+      emailOrPhone: driver.phone,
+      details: driver.vehicle.plateNumber
+    };
     this.state.activeTab = 'driver';
     this.saveState();
     return driver;
@@ -297,6 +330,13 @@ class Store {
       this.state.adminUsers.unshift(admin);
     }
     admin.lastLoginAt = new Date().toISOString();
+    this.state.authenticatedUser = {
+      role: 'admin',
+      id: admin.id,
+      name: admin.name,
+      emailOrPhone: admin.email,
+      details: 'Root Super-Admin'
+    };
     this.state.activeTab = 'admin';
     this.saveState();
     return admin;
@@ -331,6 +371,12 @@ class Store {
 
     this.state.riders.unshift(newRider);
     this.state.rider = newRider;
+    this.state.authenticatedUser = {
+      role: 'rider',
+      id: newRider.id,
+      name: newRider.name,
+      emailOrPhone: newRider.phone
+    };
     this.state.activeTab = 'rider';
     this.saveState();
     return newRider;
@@ -877,6 +923,15 @@ class Store {
     };
 
     this.state.drivers.unshift(newDriver);
+    this.state.activeDriverId = driverId;
+    this.state.authenticatedUser = {
+      role: 'driver',
+      id: driverId,
+      name: newDriver.name,
+      emailOrPhone: newDriver.phone,
+      details: newDriver.vehicle.plateNumber
+    };
+    this.state.activeTab = 'driver';
     if (isSupabaseConfigured()) {
       syncDriverToSupabase(newDriver).catch(() => {});
     }

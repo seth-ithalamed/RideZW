@@ -5,13 +5,9 @@ import {
   ShieldCheck,
   Globe,
   DollarSign,
-  AlertTriangle,
   User,
   LogIn,
-  LogOut,
-  ChevronRight,
-  Compass,
-  Home
+  LogOut
 } from 'lucide-react';
 import { store } from '../../services/store';
 import { Currency, Language, NavigationTab } from '../../types';
@@ -40,46 +36,73 @@ export const Header: React.FC<HeaderProps> = ({
   onLogout,
   onOpenAuth
 }) => {
-  const isHome = activeTab === 'landing';
+  const state = store.getState();
+  const authUser = state.authenticatedUser;
+  const isHome = activeTab === 'landing' && !authUser;
 
   const handleLogout = () => {
+    store.logout();
     if (onLogout) {
       onLogout();
-    } else {
-      store.setActiveTab('landing');
     }
   };
 
-  const state = store.getState();
-  const activeDriver = state.drivers.find((d) => d.id === state.activeDriverId) || state.drivers[0];
-  const rootAdmin = state.adminUsers.find((a) => a.isRootSuperAdmin) || state.adminUsers[0];
-
   const getPortalInfo = () => {
-    switch (activeTab) {
-      case 'rider':
+    if (!authUser) {
+      if (activeTab === 'rider') {
         return {
           title: 'Rider Portal',
           icon: Smartphone,
-          user: `${state.rider.name}`,
+          user: state.rider.name,
           color: 'bg-sky-50 text-sky-900 border-sky-200'
         };
-      case 'driver':
+      }
+      if (activeTab === 'driver') {
+        const d = state.drivers.find((dr) => dr.id === state.activeDriverId) || state.drivers[0];
         return {
           title: 'Driver Cockpit',
           icon: Car,
-          user: `${activeDriver.name}`,
+          user: d.name,
           color: 'bg-emerald-50 text-emerald-900 border-emerald-200'
         };
-      case 'admin':
+      }
+      if (activeTab === 'admin') {
+        const a = state.adminUsers.find((adm) => adm.isRootSuperAdmin) || state.adminUsers[0];
         return {
           title: 'Operations Suite',
           icon: ShieldCheck,
-          user: `${rootAdmin?.name || 'Seth'} (Root Super-Admin)`,
+          user: `${a.name} (Root Super-Admin)`,
           color: 'bg-amber-50 text-amber-950 border-amber-200'
         };
-      default:
-        return null;
+      }
+      return null;
     }
+
+    if (authUser.role === 'admin') {
+      return {
+        title: 'Operations Suite',
+        icon: ShieldCheck,
+        user: `${authUser.name} (Root Super-Admin)`,
+        color: 'bg-amber-50 text-amber-950 border-amber-200'
+      };
+    }
+    if (authUser.role === 'driver') {
+      return {
+        title: 'Driver Cockpit',
+        icon: Car,
+        user: `${authUser.name}${authUser.details ? ` (${authUser.details})` : ''}`,
+        color: 'bg-emerald-50 text-emerald-900 border-emerald-200'
+      };
+    }
+    if (authUser.role === 'rider') {
+      return {
+        title: 'Rider Portal',
+        icon: Smartphone,
+        user: authUser.name,
+        color: 'bg-sky-50 text-sky-900 border-sky-200'
+      };
+    }
+    return null;
   };
 
   const portalInfo = getPortalInfo();
@@ -88,7 +111,7 @@ export const Header: React.FC<HeaderProps> = ({
     <header className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-xs">
       <div className="max-w-7xl mx-auto px-3 sm:px-4">
         <div className="flex items-center justify-between py-2.5 gap-3">
-          {/* Left: Brand Logo */}
+          {/* Left: Brand Logo & User Context Badge */}
           <div className="flex items-center gap-3">
             <button
               onClick={() => {
@@ -104,64 +127,16 @@ export const Header: React.FC<HeaderProps> = ({
               <RideZWLogo size="sm" showTagline={true} />
             </button>
 
-            {/* In-Portal Context Badge */}
-            {!isHome && portalInfo && (
-              <div className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-bold ${portalInfo.color}`}>
+            {/* In-Portal Context Badge (Only for current role) */}
+            {portalInfo && (
+              <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-bold ${portalInfo.color}`}>
                 <portalInfo.icon className="w-3.5 h-3.5" />
                 <span>{portalInfo.title}</span>
               </div>
             )}
           </div>
 
-          {/* Quick Workspace Switcher (When authenticated) */}
-          <div className="hidden lg:flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200/80 text-xs font-semibold">
-            <button
-              onClick={() => setActiveTab('landing')}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-all ${
-                activeTab === 'landing'
-                  ? 'bg-white text-slate-900 font-bold shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Home className="w-3 h-3" />
-              <span>Home</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('rider')}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-all ${
-                activeTab === 'rider'
-                  ? 'bg-sky-900 text-white font-bold shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Smartphone className="w-3 h-3" />
-              <span>Rider</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('driver')}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-all ${
-                activeTab === 'driver'
-                  ? 'bg-emerald-700 text-white font-bold shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Car className="w-3 h-3" />
-              <span>Driver</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('admin')}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition-all ${
-                activeTab === 'admin'
-                  ? 'bg-amber-400 text-slate-950 font-black shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <ShieldCheck className="w-3 h-3" />
-              <span>Admin</span>
-            </button>
-          </div>
-
-          {/* Center / Right: Controls */}
+          {/* Center / Right: Controls & User Authentication State */}
           <div className="flex items-center gap-2 sm:gap-3">
             {/* Currency Selector (USD / ZiG) */}
             <div className="flex items-center bg-slate-100 border border-slate-200/80 rounded-lg p-0.5 text-xs font-semibold">
@@ -214,7 +189,7 @@ export const Header: React.FC<HeaderProps> = ({
               </button>
             </div>
 
-            {/* Navigation Actions based on Authentication / Portal state */}
+            {/* Navigation Actions based on Authentication */}
             {isHome ? (
               <div className="flex items-center gap-2">
                 <button
@@ -241,11 +216,11 @@ export const Header: React.FC<HeaderProps> = ({
                   </div>
                 )}
 
-                {/* PROMINENT LOGOUT BUTTON */}
+                {/* SINGLE EXPLICIT LOGOUT BUTTON */}
                 <button
                   onClick={handleLogout}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold transition-all shadow-2xs hover:shadow-xs"
-                  title="Log out of portal and return to marketing website"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold transition-all shadow-2xs hover:shadow-xs cursor-pointer"
+                  title="Log out and return to marketing website"
                 >
                   <LogOut className="w-3.5 h-3.5 text-rose-600" />
                   <span>Log Out</span>

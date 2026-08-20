@@ -201,8 +201,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currency }) => {
           </div>
 
           <button
-            onClick={() => store.setActiveTab('landing')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-xs transition-all shadow-xs ml-1"
+            onClick={() => store.logout()}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-xs transition-all shadow-xs ml-1 cursor-pointer"
             title="Log out of Operations Management Suite"
           >
             <LogOut className="w-3.5 h-3.5 text-rose-600" />

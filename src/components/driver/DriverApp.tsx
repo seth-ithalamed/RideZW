@@ -204,26 +204,11 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
             </div>
           </div>
 
-          {/* Switch Driver Profile & Logout */}
+          {/* Logout */}
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider hidden sm:inline">Profile:</span>
-              <select
-                value={activeDriver.id}
-                onChange={(e) => store.setActiveDriver(e.target.value)}
-                className="bg-slate-50 border border-slate-200 rounded px-2 py-1 text-xs text-sky-800 font-bold focus:outline-none focus:bg-white"
-              >
-                {state.drivers.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name} ({d.governmentPermitStatus?.toUpperCase() || 'NO PERMIT'})
-                  </option>
-                ))}
-              </select>
-            </div>
-
             <button
-              onClick={() => store.setActiveTab('landing')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold transition-all shadow-2xs"
+              onClick={() => store.logout()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold transition-all shadow-2xs cursor-pointer"
               title="Log out of Driver Cockpit"
             >
               <LogOut className="w-3.5 h-3.5 text-rose-600" />

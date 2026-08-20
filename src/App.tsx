@@ -40,7 +40,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    store.setActiveTab('landing');
+    store.logout();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
