@@ -25,7 +25,9 @@ import {
   AdminUser,
   AdminRole,
   NavigationTab,
-  CoverageCity
+  CoverageCity,
+  ActiveSession,
+  SessionTerminationNotice
 } from '../types';
 import {
   INITIAL_PRICING_CONFIG,
@@ -56,21 +58,36 @@ import {
   syncRiderToSupabase,
   syncSosToSupabase,
   syncLedgerEntryToSupabase,
-  subscribeToRealtimeUpdates
+  subscribeToRealtimeUpdates,
+  syncSeedDataToSupabase,
+  syncUserSessionToSupabase,
+  fetchAllDataFromSupabase
 } from './supabaseService';
-
-const STORAGE_KEY = 'ridezw_state_v1';
+import {
+  persistTripToBackend,
+  persistDriverToBackend,
+  persistRiderToBackend,
+  persistSosAlertToBackend,
+  persistLedgerEntryToBackend,
+  persistSessionToBackend,
+  fetchBackendState
+} from './apiService';
 
 export interface AuthenticatedUser {
   role: 'rider' | 'driver' | 'admin';
   id: string;
   name: string;
   emailOrPhone: string;
+  sessionId: string;
+  deviceId: string;
+  loginTime: string;
   details?: string;
 }
 
-interface AppState {
+export interface AppState {
   authenticatedUser: AuthenticatedUser | null;
+  activeSessions: Record<string, ActiveSession>; // userId -> ActiveSession
+  sessionTerminationNotice: SessionTerminationNotice | null;
   rider: RiderProfile;
   riders: RiderProfile[];
   drivers: DriverProfile[];
@@ -101,6 +118,42 @@ interface AppState {
   // Simulation Helpers
   activeDriverId: string; // The driver profile currently viewed in the Driver App
   activeTab: NavigationTab;
+  lastDbSeedInfo?: {
+    timestamp: string;
+    seededCount: number;
+    message: string;
+  } | null;
+}
+
+// Client Device Fingerprint Generator (In-Memory / Session only, strictly no localStorage)
+let memoryDeviceId: string | null = null;
+function getOrCreateDeviceId(): string {
+  if (typeof window === 'undefined') return 'server_device';
+  if (memoryDeviceId) return memoryDeviceId;
+  try {
+    let deviceId = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('ridezw_device_fingerprint') : null;
+    if (!deviceId) {
+      deviceId = 'dev_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now().toString(36);
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem('ridezw_device_fingerprint', deviceId);
+      }
+    }
+    memoryDeviceId = deviceId;
+    return deviceId;
+  } catch {
+    memoryDeviceId = 'dev_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now().toString(36);
+    return memoryDeviceId;
+  }
+}
+
+// Broadcast Channel for Instant Multi-Window / Multi-Tab Synchronization
+let authBroadcastChannel: BroadcastChannel | null = null;
+if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+  try {
+    authBroadcastChannel = new BroadcastChannel('ridezw_auth_session_channel');
+  } catch {
+    authBroadcastChannel = null;
+  }
 }
 
 class Store {
@@ -111,7 +164,205 @@ class Store {
     this.state = this.loadInitialState();
     if (typeof window !== 'undefined') {
       this.initSupabaseSync();
+      this.initSingleSessionListeners();
+      this.hydrateFromDatabase();
     }
+  }
+
+  /**
+   * Asynchronously hydrates the in-memory store directly from Supabase PostgreSQL & Backend API.
+   * Eliminates localStorage dependency while maintaining instant load times.
+   */
+  public async hydrateFromDatabase() {
+    try {
+      // 1. Try fetching directly from Supabase
+      if (isSupabaseConfigured()) {
+        const supabaseData = await fetchAllDataFromSupabase();
+        if (supabaseData) {
+          if (supabaseData.trips && supabaseData.trips.length > 0) {
+            this.state.tripHistory = supabaseData.trips;
+            // Check for currently active/in-progress trip
+            const liveActive = supabaseData.trips.find((t) =>
+              ['requested', 'accepted', 'in_progress', 'counter_offered'].includes(t.status)
+            );
+            if (liveActive) {
+              this.state.activeTrip = liveActive;
+            }
+          }
+          if (supabaseData.drivers && supabaseData.drivers.length > 0) {
+            this.state.drivers = supabaseData.drivers;
+          }
+          if (supabaseData.riders && supabaseData.riders.length > 0) {
+            this.state.riders = supabaseData.riders;
+          }
+          if (supabaseData.sosAlerts && supabaseData.sosAlerts.length > 0) {
+            this.state.sosAlerts = supabaseData.sosAlerts;
+          }
+          if (supabaseData.ledger && supabaseData.ledger.length > 0) {
+            this.state.ledger = supabaseData.ledger;
+          }
+          if (supabaseData.settings) {
+            this.state.settings = { ...this.state.settings, ...supabaseData.settings };
+          }
+          if (supabaseData.activeSessions) {
+            this.state.activeSessions = supabaseData.activeSessions;
+          }
+          this.notify();
+          return;
+        }
+      }
+
+      // 2. Fallback to Express backend state API
+      const backendRes = await fetchBackendState();
+      if (backendRes && backendRes.data) {
+        const b = backendRes.data;
+        if (b.trips && b.trips.length > 0) {
+          this.state.tripHistory = b.trips;
+        }
+        if (b.drivers && b.drivers.length > 0) {
+          this.state.drivers = b.drivers;
+        }
+        if (b.riders && b.riders.length > 0) {
+          this.state.riders = b.riders;
+        }
+        if (b.sosAlerts && b.sosAlerts.length > 0) {
+          this.state.sosAlerts = b.sosAlerts;
+        }
+        if (b.ledger && b.ledger.length > 0) {
+          this.state.ledger = b.ledger;
+        }
+        if (b.settings) {
+          this.state.settings = { ...this.state.settings, ...b.settings };
+        }
+        this.notify();
+      }
+    } catch (err) {
+      console.warn('[DB Hydration] Notice: using baseline seed in memory:', err);
+    }
+  }
+
+  private initSingleSessionListeners() {
+    // 1. Listen for BroadcastChannel messages from other tabs/windows
+    if (authBroadcastChannel) {
+      authBroadcastChannel.onmessage = (event) => {
+        if (event.data && event.data.type === 'NEW_SESSION_LOGIN') {
+          const { userId, newSessionId, userName } = event.data;
+          const currentAuth = this.state.authenticatedUser;
+          const localSessionId = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('ridezw_tab_session_id') : null;
+
+          if (currentAuth && currentAuth.id === userId && localSessionId && localSessionId !== newSessionId) {
+            // Another device/tab has logged into this credential!
+            this.handleSessionRevocation(userId, userName || currentAuth.name, 'Account was logged into on another device or window.');
+          }
+        }
+      };
+    }
+
+    // 2. Heartbeat / Window focus session validation
+    window.addEventListener('focus', () => {
+      this.verifyCurrentSession();
+    });
+  }
+
+  private verifyCurrentSession(): boolean {
+    const currentAuth = this.state.authenticatedUser;
+    if (!currentAuth) return true;
+
+    const localSessionId = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('ridezw_tab_session_id') : null;
+    const activeSession = this.state.activeSessions?.[currentAuth.id];
+
+    if (localSessionId && activeSession && activeSession.sessionId !== localSessionId) {
+      this.handleSessionRevocation(currentAuth.id, currentAuth.name, 'Single instance login violation: account signed in elsewhere.');
+      return false;
+    }
+    return true;
+  }
+
+  public handleSessionRevocation(userId: string, userName: string, reason: string) {
+    this.state.authenticatedUser = null;
+    this.state.activeTab = 'landing';
+    this.state.sessionTerminationNotice = {
+      userId,
+      userName,
+      terminatedAt: new Date().toISOString(),
+      reason: reason || 'Your account was signed in on another device. For security and regulatory compliance, RideZW strictly enforces a single active session per credential.'
+    };
+    if (typeof window !== 'undefined') {
+      try {
+        sessionStorage.removeItem('ridezw_tab_session_id');
+        sessionStorage.removeItem('ridezw_tab_user_id');
+      } catch {}
+    }
+    this.saveState();
+  }
+
+  public clearSessionNotice() {
+    this.state.sessionTerminationNotice = null;
+    this.saveState();
+  }
+
+  private createAndEnforceSession(
+    userId: string,
+    role: 'rider' | 'driver' | 'admin',
+    name: string,
+    emailOrPhone: string,
+    details?: string
+  ): AuthenticatedUser {
+    const sessionId = 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
+    const deviceId = getOrCreateDeviceId();
+    const loginTime = new Date().toISOString();
+
+    const user: AuthenticatedUser = {
+      role,
+      id: userId,
+      name,
+      emailOrPhone,
+      sessionId,
+      deviceId,
+      loginTime,
+      details
+    };
+
+    const sessionObj: ActiveSession = {
+      userId,
+      role,
+      sessionId,
+      deviceId,
+      loginTime,
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'Web Browser'
+    };
+
+    if (!this.state.activeSessions) {
+      this.state.activeSessions = {};
+    }
+    this.state.activeSessions[userId] = sessionObj;
+    this.state.authenticatedUser = user;
+    this.state.sessionTerminationNotice = null;
+
+    if (typeof window !== 'undefined') {
+      try {
+        sessionStorage.setItem('ridezw_tab_session_id', sessionId);
+        sessionStorage.setItem('ridezw_tab_user_id', userId);
+      } catch {}
+
+      // Broadcast new login to invalidate any older session on other devices/windows
+      try {
+        authBroadcastChannel?.postMessage({
+          type: 'NEW_SESSION_LOGIN',
+          userId,
+          newSessionId: sessionId,
+          deviceId,
+          loginTime,
+          userName: name
+        });
+      } catch {}
+    }
+
+    // Sync active session to Backend API & Supabase
+    persistSessionToBackend(sessionObj).catch(() => {});
+    syncUserSessionToSupabase(sessionObj).catch(() => {});
+
+    return user;
   }
 
   private initSupabaseSync() {
@@ -147,6 +398,16 @@ class Store {
             };
             this.saveState();
           }
+        },
+        onSessionChange: (payload) => {
+          if (!payload || !payload.new) return;
+          const updated = payload.new;
+          const currentAuth = this.state.authenticatedUser;
+          const localSessionId = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('ridezw_tab_session_id') : null;
+
+          if (currentAuth && currentAuth.id === updated.user_id && localSessionId && localSessionId !== updated.session_id) {
+            this.handleSessionRevocation(currentAuth.id, currentAuth.name, 'Remote device signed into this account.');
+          }
         }
       });
     } catch (err) {
@@ -155,30 +416,18 @@ class Store {
   }
 
   private loadInitialState(): AppState {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (!parsed.riders || !Array.isArray(parsed.riders)) {
-          parsed.riders = INITIAL_RIDERS;
-        }
-        if (!parsed.adminUsers || !Array.isArray(parsed.adminUsers)) {
-          parsed.adminUsers = INITIAL_ADMIN_USERS;
-        }
-        if (!parsed.coverageCities || !Array.isArray(parsed.coverageCities) || parsed.coverageCities.length === 0) {
-          parsed.coverageCities = INITIAL_COVERAGE_CITIES;
-        }
-        if (!parsed.activeTab || parsed.activeTab === 'rider') {
-          parsed.activeTab = 'landing';
-        }
-        return parsed;
-      }
-    } catch {
-      // fallback
+    // Clear any residual localStorage cache from prior iterations
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem('ridezw_state_v1');
+        localStorage.removeItem('ridezw_device_fingerprint');
+      } catch {}
     }
 
     return {
       authenticatedUser: null,
+      activeSessions: {},
+      sessionTerminationNotice: null,
       rider: INITIAL_RIDER,
       riders: INITIAL_RIDERS,
       drivers: INITIAL_DRIVERS,
@@ -201,37 +450,38 @@ class Store {
       platformLookups: INITIAL_LOOKUP_LOGS,
       platformTripReports: INITIAL_TRIP_REPORTS,
       offlineFineQueue: [],
-      activeDriverId: INITIAL_DRIVERS[0].id,
-      activeTab: 'landing'
+      activeDriverId: INITIAL_DRIVERS[0]?.id || '',
+      activeTab: 'landing',
+      lastDbSeedInfo: null
     };
   }
 
   private saveState() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
-      if (this.state.activeTrip && isSupabaseConfigured()) {
+    // Strictly in-memory & remote Supabase / Backend API persistence (no localStorage write)
+    if (this.state.activeTrip) {
+      persistTripToBackend(this.state.activeTrip).catch(() => {});
+      if (isSupabaseConfigured()) {
         syncTripToSupabase(this.state.activeTrip).catch(() => {});
       }
-    } catch (e) {
-      console.error('Failed to save state:', e);
     }
     this.notify();
   }
 
   private notify() {
-    this.listeners.forEach((listener) => listener(this.state));
+    const cloned = { ...this.state };
+    this.listeners.forEach((listener) => listener(cloned));
   }
 
   public subscribe(listener: (state: AppState) => void): () => void {
     this.listeners.push(listener);
-    listener(this.state);
+    listener({ ...this.state });
     return () => {
       this.listeners = this.listeners.filter((l) => l !== listener);
     };
   }
 
   public getState(): AppState {
-    return this.state;
+    return { ...this.state };
   }
 
   public getAuthenticatedUser(): AuthenticatedUser | null {
@@ -239,14 +489,116 @@ class Store {
   }
 
   public logout() {
+    const currentAuth = this.state.authenticatedUser;
+    if (currentAuth && this.state.activeSessions) {
+      delete this.state.activeSessions[currentAuth.id];
+    }
     this.state.authenticatedUser = null;
     this.state.activeTab = 'landing';
+    if (typeof window !== 'undefined') {
+      try {
+        sessionStorage.removeItem('ridezw_tab_session_id');
+        sessionStorage.removeItem('ridezw_tab_user_id');
+      } catch {}
+    }
     this.saveState();
   }
 
   public setActiveTab(tab: AppState['activeTab']) {
     this.state.activeTab = tab;
     this.saveState();
+  }
+
+  /**
+   * Writes initial seed data into the database if the database is missing any seed records.
+   * Auto-invoked when the super admin logs in.
+   */
+  public seedDatabaseIfEmpty(): { seeded: boolean; seededCounts: Record<string, number>; message: string } {
+    let wasSeeded = false;
+    const counts: Record<string, number> = {
+      cities: 0,
+      pricing: 0,
+      permits: 0,
+      settings: 0,
+      adminUsers: 0
+    };
+
+    // 1. Coverage Cities
+    if (!this.state.coverageCities || !Array.isArray(this.state.coverageCities) || this.state.coverageCities.length === 0) {
+      this.state.coverageCities = [...INITIAL_COVERAGE_CITIES];
+      counts.cities = INITIAL_COVERAGE_CITIES.length;
+      wasSeeded = true;
+    }
+
+    // 2. Pricing Configs
+    if (!this.state.pricingConfigs || !Array.isArray(this.state.pricingConfigs) || this.state.pricingConfigs.length === 0) {
+      this.state.pricingConfigs = [...INITIAL_PRICING_CONFIG];
+      counts.pricing = INITIAL_PRICING_CONFIG.length;
+      wasSeeded = true;
+    }
+
+    // 3. Permit Types
+    if (!this.state.permitTypes || !Array.isArray(this.state.permitTypes) || this.state.permitTypes.length === 0) {
+      this.state.permitTypes = [...INITIAL_PERMIT_TYPES];
+      counts.permits = INITIAL_PERMIT_TYPES.length;
+      wasSeeded = true;
+    }
+
+    // 4. Platform Settings
+    if (!this.state.settings || !this.state.settings.exchangeRateUSDToZWG) {
+      this.state.settings = { ...INITIAL_SETTINGS };
+      counts.settings = 1;
+      wasSeeded = true;
+    }
+
+    // 5. Admin Users
+    if (!this.state.adminUsers || !Array.isArray(this.state.adminUsers) || this.state.adminUsers.length === 0) {
+      this.state.adminUsers = [...INITIAL_ADMIN_USERS];
+      counts.adminUsers = INITIAL_ADMIN_USERS.length;
+      wasSeeded = true;
+    }
+
+    // Sync seed data to Backend Server API & Supabase DB
+    fetch('/api/seed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        coverageCities: this.state.coverageCities,
+        pricingConfigs: this.state.pricingConfigs,
+        permitTypes: this.state.permitTypes,
+        settings: this.state.settings,
+        adminUsers: this.state.adminUsers
+      })
+    }).catch(() => {});
+
+    if (isSupabaseConfigured()) {
+      syncSeedDataToSupabase({
+        coverageCities: this.state.coverageCities,
+        pricingConfigs: this.state.pricingConfigs,
+        permitTypes: this.state.permitTypes,
+        settings: this.state.settings,
+        adminUsers: this.state.adminUsers
+      }).then((res) => {
+        console.log('⚡ Database Seeding status:', res.message);
+      }).catch(() => {});
+    }
+
+    if (wasSeeded) {
+      this.state.lastDbSeedInfo = {
+        timestamp: new Date().toISOString(),
+        seededCount: Object.values(counts).reduce((a, b) => a + b, 0),
+        message: `Seed records initialized into DB (${counts.cities} cities, ${counts.pricing} fare matrix tiers, ${counts.permits} permit classes, ${counts.settings} settings profile).`
+      };
+      this.saveState();
+    }
+
+    return {
+      seeded: wasSeeded,
+      seededCounts: counts,
+      message: wasSeeded
+        ? `Seed data initialized and written to DB (${counts.cities} cities, ${counts.pricing} fare classes).`
+        : 'Database already populated with seed records.'
+    };
   }
 
   public loginAsRider(phoneOrEmail: string): RiderProfile {
@@ -276,12 +628,15 @@ class Store {
       this.state.riders.unshift(rider);
     }
     this.state.rider = rider;
-    this.state.authenticatedUser = {
-      role: 'rider',
-      id: rider.id,
-      name: rider.name,
-      emailOrPhone: rider.phone
-    };
+    
+    // Single instance session enforcement
+    this.createAndEnforceSession(
+      rider.id,
+      'rider',
+      rider.name,
+      rider.phone
+    );
+
     this.state.activeTab = 'rider';
     this.saveState();
     return rider;
@@ -292,31 +647,76 @@ class Store {
       (d) => d.phone === phoneOrPlate || d.vehicle.plateNumber.toLowerCase() === phoneOrPlate.toLowerCase()
     );
     if (!driver) {
-      driver = this.state.drivers[0];
+      const cleanInput = phoneOrPlate.trim();
+      const isPlate = /^[A-Z]{3}-?[0-9]{3,4}$/i.test(cleanInput);
+      const newDriverId = `drv-${Date.now().toString().slice(-6)}`;
+      driver = {
+        id: newDriverId,
+        name: 'Driver Partner',
+        phone: isPlate ? '+263 77 123 4567' : cleanInput || '+263 77 123 4567',
+        nationalId: `63-${Math.floor(Math.random() * 899999 + 100000)}-Z-42`,
+        email: 'driver@ridezw.co.zw',
+        avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
+        kycStatus: 'approved',
+        vehicle: {
+          id: `veh-${Date.now().toString().slice(-6)}`,
+          driverId: newDriverId,
+          make: 'Toyota',
+          model: 'Passo',
+          year: 2020,
+          color: 'Silver',
+          plateNumber: isPlate ? cleanInput.toUpperCase() : `AFE-${Math.floor(Math.random() * 8999 + 1000)}`,
+          category: 'economy',
+          capacity: 4
+        },
+        rating: 5.0,
+        totalTrips: 0,
+        isOnline: true,
+        currentLat: -17.8292,
+        currentLng: 31.0522,
+        city: 'Harare',
+        subscriptionTier: 'commission',
+        walletBalance: 0.00,
+        cashDebtCeiling: 15.00,
+        isBlockedDueToDebt: false,
+        documents: [],
+        registeredAt: new Date().toISOString()
+      };
+      this.state.drivers.unshift(driver);
     }
     this.state.activeDriverId = driver.id;
-    this.state.authenticatedUser = {
-      role: 'driver',
-      id: driver.id,
-      name: driver.name,
-      emailOrPhone: driver.phone,
-      details: driver.vehicle.plateNumber
-    };
+
+    // Single instance session enforcement
+    this.createAndEnforceSession(
+      driver.id,
+      'driver',
+      driver.name,
+      driver.phone,
+      driver.vehicle.plateNumber
+    );
+
     this.state.activeTab = 'driver';
     this.saveState();
     return driver;
   }
 
-  public loginAsAdmin(email: string): AdminUser {
+  public loginAsAdmin(email: string, password?: string): AdminUser {
+    const cleanEmail = email.trim().toLowerCase();
+
+    // 1. Password must not be empty
+    if (!password || password.trim() === '') {
+      throw new Error('Please enter your administrator security password.');
+    }
+
     let admin = this.state.adminUsers.find(
-      (a) => a.email.toLowerCase() === email.toLowerCase().trim()
+      (a) => a.email.toLowerCase() === cleanEmail
     );
     if (!admin) {
       // If seth.bbd@gmail.com or other founder logs in, ensure root admin
       admin = {
         id: `adm-${Date.now().toString().slice(-6)}`,
-        name: email.includes('seth') ? 'Seth (Platform Founder)' : 'Platform Administrator',
-        email: email.trim().toLowerCase(),
+        name: cleanEmail.includes('seth') ? 'Seth (Platform Founder)' : 'Platform Administrator',
+        email: cleanEmail,
         phone: '+263 77 123 4567',
         role: 'super_admin',
         department: 'Executive Operations & Infrastructure',
@@ -330,13 +730,19 @@ class Store {
       this.state.adminUsers.unshift(admin);
     }
     admin.lastLoginAt = new Date().toISOString();
-    this.state.authenticatedUser = {
-      role: 'admin',
-      id: admin.id,
-      name: admin.name,
-      emailOrPhone: admin.email,
-      details: 'Root Super-Admin'
-    };
+
+    // 2. Check and write seed data to DB if missing
+    this.seedDatabaseIfEmpty();
+
+    // 3. Single instance session enforcement
+    this.createAndEnforceSession(
+      admin.id,
+      'admin',
+      admin.name,
+      admin.email,
+      'Root Super-Admin'
+    );
+
     this.state.activeTab = 'admin';
     this.saveState();
     return admin;
@@ -371,13 +777,17 @@ class Store {
 
     this.state.riders.unshift(newRider);
     this.state.rider = newRider;
-    this.state.authenticatedUser = {
-      role: 'rider',
-      id: newRider.id,
-      name: newRider.name,
-      emailOrPhone: newRider.phone
-    };
+    this.createAndEnforceSession(
+      newRider.id,
+      'rider',
+      newRider.name,
+      newRider.phone
+    );
     this.state.activeTab = 'rider';
+    persistRiderToBackend(newRider).catch(() => {});
+    if (isSupabaseConfigured()) {
+      syncRiderToSupabase(newRider).catch(() => {});
+    }
     this.saveState();
     return newRider;
   }
@@ -388,7 +798,6 @@ class Store {
   }
 
   public resetAllData() {
-    localStorage.removeItem(STORAGE_KEY);
     this.state = this.loadInitialState();
     this.notify();
   }
@@ -924,14 +1333,15 @@ class Store {
 
     this.state.drivers.unshift(newDriver);
     this.state.activeDriverId = driverId;
-    this.state.authenticatedUser = {
-      role: 'driver',
-      id: driverId,
-      name: newDriver.name,
-      emailOrPhone: newDriver.phone,
-      details: newDriver.vehicle.plateNumber
-    };
+    this.createAndEnforceSession(
+      driverId,
+      'driver',
+      newDriver.name,
+      newDriver.phone,
+      newDriver.vehicle.plateNumber
+    );
     this.state.activeTab = 'driver';
+    persistDriverToBackend(newDriver).catch(() => {});
     if (isSupabaseConfigured()) {
       syncDriverToSupabase(newDriver).catch(() => {});
     }
@@ -1415,6 +1825,7 @@ class Store {
     }
 
     this.state.sosAlerts.unshift(alert);
+    persistSosAlertToBackend(alert).catch(() => {});
     if (isSupabaseConfigured()) {
       syncSosToSupabase(alert).catch(() => {});
     }
@@ -1426,6 +1837,10 @@ class Store {
     const alert = this.state.sosAlerts.find((s) => s.id === alertId);
     if (!alert) return;
     alert.status = status;
+    persistSosAlertToBackend(alert).catch(() => {});
+    if (isSupabaseConfigured()) {
+      syncSosToSupabase(alert).catch(() => {});
+    }
     this.saveState();
   }
 

@@ -1,26 +1,24 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import L from 'leaflet';
 import { LocationPoint, VehicleCategory } from '../../types';
 import {
-  Car,
-  MapPin,
-  Navigation,
-  Bike,
-  Users,
-  Sparkles,
-  Shield,
   Layers,
   Search,
   ZoomIn,
   ZoomOut,
+  Navigation,
+  Shield,
   Compass,
   Crosshair,
-  ExternalLink,
-  Map as MapIcon,
-  Route,
-  Clock,
-  Eye
+  MapPin,
+  Car,
+  Bike,
+  Sparkles,
+  Users
 } from 'lucide-react';
-import { searchMapboxPlaces, MapboxPlace, MapboxStyle } from '../../services/mapboxService';
+import { searchMapboxPlaces, MapboxPlace } from '../../services/mapboxService';
+
+export type MapTileStyle = 'streets' | 'light' | 'dark' | 'satellite';
 
 interface MapVisualizerProps {
   pickup?: LocationPoint | null;
@@ -34,8 +32,43 @@ interface MapVisualizerProps {
   city?: string;
   showSearchBar?: boolean;
   showLayerToggle?: boolean;
-  defaultStyle?: MapboxStyle;
+  defaultStyle?: MapTileStyle;
 }
+
+const CITY_COORDS: Record<string, [number, number]> = {
+  harare: [-17.8292, 31.0522],
+  bulawayo: [-20.1569, 28.5833],
+  'victoria falls': [-17.9311, 25.8307],
+  mutare: [-18.9728, 32.6695],
+  gweru: [-19.4587, 29.8153],
+  masvingo: [-20.0744, 30.8328],
+  chinhoyi: [-17.3667, 30.2000],
+  kwekwe: [-18.9281, 29.8149],
+  marondera: [-18.1853, 31.5519],
+  kadoma: [-18.3333, 29.9167],
+  zvishavane: [-20.3267, 30.0665],
+  beitbridge: [-22.2167, 30.0000],
+  hwange: [-18.3647, 25.4981]
+};
+
+const TILE_URLS: Record<MapTileStyle, { url: string; attribution: string }> = {
+  streets: {
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+  },
+  light: {
+    url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; OpenStreetMap'
+  },
+  dark: {
+    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; OpenStreetMap'
+  },
+  satellite: {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye'
+  }
+};
 
 export const MapVisualizer: React.FC<MapVisualizerProps> = ({
   pickup,
@@ -43,82 +76,231 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
   driverLocation,
   nearbyDrivers = [],
   progressPercent = 0,
-  height = 'h-64',
+  height = 'h-72',
   interactive = true,
   onSelectLocation,
   city = 'Harare',
   showSearchBar = false,
   showLayerToggle = true,
-  defaultStyle = 'streets'
+  defaultStyle = 'light'
 }) => {
-  const [mapStyle, setMapStyle] = useState<MapboxStyle>(defaultStyle);
-  const [zoomLevel, setZoomLevel] = useState<number>(1);
-  const [is3DMode, setIs3DMode] = useState<boolean>(false);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapInstanceRef = useRef<L.Map | null>(null);
+  const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const markersLayerRef = useRef<L.LayerGroup | null>(null);
+  const routePolylineRef = useRef<L.Polyline | null>(null);
+
+  const [currentStyle, setCurrentStyle] = useState<MapTileStyle>(defaultStyle);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<MapboxPlace[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [activePin, setActivePin] = useState<{ x: number; y: number; address: string } | null>(null);
 
-  // Coordinate bounds with dynamic auto-framing for hyper-local locations & growth points
-  const cityBoundsMap: Record<string, { minLat: number; maxLat: number; minLng: number; maxLng: number }> = {
-    harare: { minLat: -17.95, maxLat: -17.74, minLng: 30.95, maxLng: 31.15 },
-    bulawayo: { minLat: -20.22, maxLat: -20.00, minLng: 28.50, maxLng: 28.70 },
-    'victoria falls': { minLat: -18.12, maxLat: -17.90, minLng: 25.80, maxLng: 25.88 },
-    mutare: { minLat: -19.02, maxLat: -18.94, minLng: 32.62, maxLng: 32.72 },
-    gweru: { minLat: -19.52, maxLat: -19.42, minLng: 29.78, maxLng: 29.86 },
-    chitungwiza: { minLat: -18.04, maxLat: -17.98, minLng: 31.02, maxLng: 31.10 },
-    masvingo: { minLat: -20.30, maxLat: -20.04, minLng: 30.80, maxLng: 30.95 }
-  };
+  const cityKey = (city || 'Harare').toLowerCase();
+  const defaultCenter = CITY_COORDS[cityKey] || CITY_COORDS['harare'];
 
-  const defaultBounds = cityBoundsMap[city.toLowerCase()] || cityBoundsMap['harare'];
-  
-  // Calculate dynamic bounding box if pickup and destination are outside default bounds
-  let bounds = defaultBounds;
-  const allPoints: Array<{ lat: number; lng: number }> = [];
-  if (pickup) allPoints.push({ lat: pickup.lat, lng: pickup.lng });
-  if (destination) allPoints.push({ lat: destination.lat, lng: destination.lng });
-  if (driverLocation) allPoints.push({ lat: driverLocation.lat, lng: driverLocation.lng });
+  // Initialize Leaflet Map
+  useEffect(() => {
+    if (!mapContainerRef.current) return;
 
-  if (allPoints.length > 0) {
-    const lats = allPoints.map((p) => p.lat);
-    const lngs = allPoints.map((p) => p.lng);
-    const minL = Math.min(...lats);
-    const maxL = Math.max(...lats);
-    const minG = Math.min(...lngs);
-    const maxG = Math.max(...lngs);
+    // Clean up if existing
+    if (mapInstanceRef.current) {
+      mapInstanceRef.current.remove();
+      mapInstanceRef.current = null;
+    }
 
-    const latSpan = Math.max(0.04, (maxL - minL) * 1.35);
-    const lngSpan = Math.max(0.04, (maxG - minG) * 1.35);
-    const midLat = (minL + maxL) / 2;
-    const midLng = (minG + maxG) / 2;
+    const map = L.map(mapContainerRef.current, {
+      center: defaultCenter,
+      zoom: 13,
+      zoomControl: false,
+      attributionControl: false
+    });
 
-    bounds = {
-      minLat: midLat - latSpan / 2,
-      maxLat: midLat + latSpan / 2,
-      minLng: midLng - lngSpan / 2,
-      maxLng: midLng + lngSpan / 2
+    const tileConfig = TILE_URLS[currentStyle];
+    const tileLayer = L.tileLayer(tileConfig.url, {
+      maxZoom: 19,
+      subdomains: 'abc'
+    }).addTo(map);
+
+    tileLayerRef.current = tileLayer;
+    markersLayerRef.current = L.layerGroup().addTo(map);
+
+    if (interactive && onSelectLocation) {
+      map.on('click', (e: L.LeafletMouseEvent) => {
+        const { lat, lng } = e.latlng;
+        const address = `${city} Location (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+        onSelectLocation({
+          address,
+          neighborhood: `${city} Sector`,
+          city,
+          lat,
+          lng
+        });
+      });
+    }
+
+    mapInstanceRef.current = map;
+
+    return () => {
+      map.remove();
+      mapInstanceRef.current = null;
     };
-  }
+  }, []);
 
-  const project = (lat: number, lng: number) => {
-    const x = ((lng - bounds.minLng) / (bounds.maxLng - bounds.minLng)) * 100;
-    const y = ((bounds.maxLat - lat) / (bounds.maxLat - bounds.minLat)) * 100;
-    return { x: Math.max(6, Math.min(94, x)), y: Math.max(6, Math.min(94, y)) };
-  };
+  // Update Tile Style
+  useEffect(() => {
+    if (!mapInstanceRef.current || !tileLayerRef.current) return;
+    mapInstanceRef.current.removeLayer(tileLayerRef.current);
+    const tileConfig = TILE_URLS[currentStyle];
+    const newTile = L.tileLayer(tileConfig.url, {
+      maxZoom: 19,
+      subdomains: 'abc'
+    }).addTo(mapInstanceRef.current);
+    tileLayerRef.current = newTile;
+  }, [currentStyle]);
 
-  const pickupCoord = pickup ? project(pickup.lat, pickup.lng) : null;
-  const destCoord = destination ? project(destination.lat, destination.lng) : null;
+  // Center on City change
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+    if (!pickup && !destination && (!nearbyDrivers || nearbyDrivers.length === 0)) {
+      mapInstanceRef.current.setView(defaultCenter, 13);
+    }
+  }, [city]);
 
-  let currentCarPos = null;
-  if (pickupCoord && destCoord) {
-    const curX = pickupCoord.x + (destCoord.x - pickupCoord.x) * (progressPercent / 100);
-    const curY = pickupCoord.y + (destCoord.y - pickupCoord.y) * (progressPercent / 100);
-    currentCarPos = { x: curX, y: curY };
-  } else if (driverLocation) {
-    currentCarPos = project(driverLocation.lat, driverLocation.lng);
-  }
+  // Render Markers, Route, and Fit Bounds
+  useEffect(() => {
+    if (!mapInstanceRef.current || !markersLayerRef.current) return;
 
-  // Handle Search using Mapbox Geocoding Engine
+    markersLayerRef.current.clearLayers();
+
+    if (routePolylineRef.current) {
+      mapInstanceRef.current.removeLayer(routePolylineRef.current);
+      routePolylineRef.current = null;
+    }
+
+    const boundsPoints: L.LatLngExpression[] = [];
+
+    // 1. Pickup Marker
+    if (pickup) {
+      const pickupIcon = L.divIcon({
+        className: 'custom-leaflet-marker',
+        html: `
+          <div style="display: flex; flex-direction: column; align-items: center; transform: translate(-50%, -100%);">
+            <div style="background-color: #059669; color: white; padding: 6px; border-radius: 9999px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3); border: 2px solid white; display: flex; align-items: center; justify-content: center;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3" fill="white"/></svg>
+            </div>
+            <div style="background-color: #0f172a; color: #6ee7b7; font-size: 10px; font-weight: 700; font-family: monospace; padding: 2px 6px; border-radius: 4px; margin-top: 2px; border: 1px solid rgba(5,150,105,0.4); white-space: nowrap; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+              PICKUP: ${pickup.neighborhood || pickup.address.slice(0, 15)}
+            </div>
+          </div>
+        `,
+        iconSize: [0, 0]
+      });
+
+      L.marker([pickup.lat, pickup.lng], { icon: pickupIcon }).addTo(markersLayerRef.current);
+      boundsPoints.push([pickup.lat, pickup.lng]);
+    }
+
+    // 2. Destination Marker
+    if (destination) {
+      const destIcon = L.divIcon({
+        className: 'custom-leaflet-marker',
+        html: `
+          <div style="display: flex; flex-direction: column; align-items: center; transform: translate(-50%, -100%);">
+            <div style="background-color: #e11d48; color: white; padding: 6px; border-radius: 9999px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3); border: 2px solid white; display: flex; align-items: center; justify-content: center;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3" fill="white"/></svg>
+            </div>
+            <div style="background-color: #0f172a; color: #fda4af; font-size: 10px; font-weight: 700; font-family: monospace; padding: 2px 6px; border-radius: 4px; margin-top: 2px; border: 1px solid rgba(225,29,72,0.4); white-space: nowrap; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+              DROPOFF: ${destination.neighborhood || destination.address.slice(0, 15)}
+            </div>
+          </div>
+        `,
+        iconSize: [0, 0]
+      });
+
+      L.marker([destination.lat, destination.lng], { icon: destIcon }).addTo(markersLayerRef.current);
+      boundsPoints.push([destination.lat, destination.lng]);
+    }
+
+    // 3. Active Moving Driver Marker
+    let movingDriverLat = driverLocation?.lat;
+    let movingDriverLng = driverLocation?.lng;
+
+    if (pickup && destination && progressPercent > 0) {
+      movingDriverLat = pickup.lat + (destination.lat - pickup.lat) * (progressPercent / 100);
+      movingDriverLng = pickup.lng + (destination.lng - pickup.lng) * (progressPercent / 100);
+    }
+
+    if (movingDriverLat !== undefined && movingDriverLng !== undefined) {
+      const activeCarIcon = L.divIcon({
+        className: 'custom-leaflet-marker',
+        html: `
+          <div style="display: flex; flex-direction: column; align-items: center; transform: translate(-50%, -50%);">
+            <div style="background-color: #0284c7; color: white; padding: 7px; border-radius: 9999px; box-shadow: 0 0 15px rgba(2,132,199,0.7); border: 2.5px solid #fbbf24; display: flex; align-items: center; justify-content: center;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/><circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/></svg>
+            </div>
+          </div>
+        `,
+        iconSize: [0, 0]
+      });
+
+      L.marker([movingDriverLat, movingDriverLng], { icon: activeCarIcon }).addTo(markersLayerRef.current);
+      boundsPoints.push([movingDriverLat, movingDriverLng]);
+    }
+
+    // 4. Nearby Fleet Markers
+    nearbyDrivers.forEach((driver) => {
+      const isMoto = driver.category === 'motorbike';
+      const fleetIcon = L.divIcon({
+        className: 'custom-leaflet-marker',
+        html: `
+          <div style="display: flex; flex-direction: column; align-items: center; transform: translate(-50%, -50%); cursor: pointer;">
+            <div style="background-color: #0f172a; color: #fbbf24; padding: 5px; border-radius: 9999px; box-shadow: 0 2px 6px rgba(0,0,0,0.3); border: 2px solid #fbbf24; display: flex; align-items: center; justify-content: center;">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/><circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/></svg>
+            </div>
+            <div style="background-color: #0f172a; color: white; font-size: 8px; font-weight: 700; font-family: monospace; padding: 1px 4px; border-radius: 3px; margin-top: 1px; border: 1px solid #334155; white-space: nowrap;">
+              ${driver.plate}
+            </div>
+          </div>
+        `,
+        iconSize: [0, 0]
+      });
+
+      L.marker([driver.lat, driver.lng], { icon: fleetIcon })
+        .bindPopup(`<strong>${driver.name}</strong><br/>Plate: ${driver.plate}<br/>Class: ${driver.category}`)
+        .addTo(markersLayerRef.current!);
+
+      boundsPoints.push([driver.lat, driver.lng]);
+    });
+
+    // 5. Draw Route Line between Pickup and Destination
+    if (pickup && destination) {
+      const latlngs: L.LatLngExpression[] = [
+        [pickup.lat, pickup.lng],
+        [destination.lat, destination.lng]
+      ];
+
+      const polyline = L.polyline(latlngs, {
+        color: '#0284c7',
+        weight: 5,
+        opacity: 0.85,
+        dashArray: '6, 8',
+        lineCap: 'round',
+        lineJoin: 'round'
+      }).addTo(mapInstanceRef.current);
+
+      routePolylineRef.current = polyline;
+    }
+
+    // 6. Auto-fit bounds if multiple points exist
+    if (boundsPoints.length > 1) {
+      const bounds = L.latLngBounds(boundsPoints);
+      mapInstanceRef.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+    } else if (boundsPoints.length === 1) {
+      mapInstanceRef.current.setView(boundsPoints[0], 14);
+    }
+  }, [pickup, destination, driverLocation, nearbyDrivers, progressPercent]);
+
+  // Search geocoding
   const handleSearchChange = (q: string) => {
     setSearchQuery(q);
     if (q.trim().length > 1) {
@@ -132,10 +314,11 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
   };
 
   const handleSelectSearchResult = (place: MapboxPlace) => {
-    const coord = project(place.lat, place.lng);
-    setActivePin({ x: coord.x, y: coord.y, address: place.name });
     setSearchQuery(place.name);
     setIsSearching(false);
+    if (mapInstanceRef.current) {
+      mapInstanceRef.current.setView([place.lat, place.lng], 15);
+    }
     if (onSelectLocation) {
       onSelectLocation({
         address: place.name,
@@ -147,93 +330,54 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
     }
   };
 
-  const handleMapClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!interactive) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const clickXPercent = ((e.clientX - rect.left) / rect.width) * 100;
-    const clickYPercent = ((e.clientY - rect.top) / rect.height) * 100;
-
-    // Estimate lat/lng from click
-    const approxLng = bounds.minLng + (clickXPercent / 100) * (bounds.maxLng - bounds.minLng);
-    const approxLat = bounds.maxLat - (clickYPercent / 100) * (bounds.maxLat - bounds.minLat);
-
-    const address = `${city} Coordinate Point (${approxLat.toFixed(4)}, ${approxLng.toFixed(4)})`;
-    setActivePin({ x: clickXPercent, y: clickYPercent, address });
-
-    if (onSelectLocation) {
-      onSelectLocation({
-        address,
-        neighborhood: `${city} Central Sector`,
-        city,
-        lat: approxLat,
-        lng: approxLng
-      });
+  const handleZoomIn = () => {
+    if (mapInstanceRef.current) {
+      mapInstanceRef.current.zoomIn();
     }
   };
 
-  // Theme styles based on Mapbox layer selection
-  const isDark = mapStyle === 'navigation-dark';
-  const isSatellite = mapStyle === 'satellite';
-  const isOutdoors = mapStyle === 'outdoors';
+  const handleZoomOut = () => {
+    if (mapInstanceRef.current) {
+      mapInstanceRef.current.zoomOut();
+    }
+  };
 
-  const bgColor = isSatellite
-    ? 'bg-[#0f1d13]'
-    : isDark
-    ? 'bg-[#08131f]'
-    : isOutdoors
-    ? 'bg-[#eaf4ea]'
-    : 'bg-[#f1f5f9]';
-
-  const roadStroke = isSatellite
-    ? '#1c4228'
-    : isDark
-    ? '#132840'
-    : isOutdoors
-    ? '#cadac8'
-    : '#cbd5e1';
-
-  const arterialStroke = isSatellite
-    ? '#2f663c'
-    : isDark
-    ? '#1d3e64'
-    : isOutdoors
-    ? '#b3ccb0'
-    : '#94a3b8';
-
-  const gridLineStroke = isSatellite
-    ? '#132c1c'
-    : isDark
-    ? '#0d1e32'
-    : isOutdoors
-    ? '#dfeadf'
-    : '#e2e8f0';
+  const handleRecenter = () => {
+    if (mapInstanceRef.current) {
+      if (pickup) {
+        mapInstanceRef.current.setView([pickup.lat, pickup.lng], 14);
+      } else {
+        mapInstanceRef.current.setView(defaultCenter, 13);
+      }
+    }
+  };
 
   return (
-    <div
-      className={`relative w-full ${height} ${bgColor} rounded-lg overflow-hidden border border-slate-300 dark:border-sky-900/60 shadow-xs select-none transition-colors duration-300`}
-    >
-      {/* Mapbox Search Autocomplete Bar Overlay */}
+    <div className={`relative w-full ${height} bg-slate-100 rounded-xl overflow-hidden border border-slate-300 shadow-xs select-none`}>
+      {/* Real Leaflet Map Container */}
+      <div ref={mapContainerRef} className="w-full h-full z-0" />
+
+      {/* Search Bar Overlay */}
       {showSearchBar && (
-        <div className="absolute top-2.5 left-2.5 right-12 z-30 max-w-sm">
+        <div className="absolute top-2.5 left-2.5 right-12 z-20 max-w-sm">
           <div className="relative">
             <div className="flex items-center bg-white/95 backdrop-blur-md border border-slate-300 rounded-lg shadow-md px-2.5 py-1.5 gap-2">
               <Search className="w-3.5 h-3.5 text-sky-800 shrink-0" />
               <input
                 type="text"
-                placeholder={`Search ${city} via Mapbox Geocoding...`}
+                placeholder={`Search ${city} landmarks & streets...`}
                 value={searchQuery}
                 onChange={(e) => handleSearchChange(e.target.value)}
                 onFocus={() => searchQuery.length > 1 && setIsSearching(true)}
                 className="w-full bg-transparent text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none"
               />
               <span className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-sky-100 text-sky-900 font-mono whitespace-nowrap">
-                MAPBOX
+                LEAFLET
               </span>
             </div>
 
-            {/* Geocoding Dropdown Suggestions */}
             {isSearching && searchResults.length > 0 && (
-              <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden z-40 divide-y divide-slate-100 animate-in fade-in zoom-in-95 duration-150">
+              <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden z-30 divide-y divide-slate-100 animate-in fade-in zoom-in-95">
                 {searchResults.map((place) => (
                   <button
                     key={place.id}
@@ -257,295 +401,86 @@ export const MapVisualizer: React.FC<MapVisualizerProps> = ({
         </div>
       )}
 
-      {/* Interactive Map Surface */}
-      <div
-        onClick={handleMapClick}
-        className={`w-full h-full cursor-crosshair relative ${is3DMode ? 'transform perspective-1000 rotate-x-12 scale-105 transition-transform duration-500' : ''}`}
-      >
-        {/* City Vector Network & Road Grid */}
-        <svg className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
-          <defs>
-            <pattern id={`mapbox-grid-${mapStyle}`} width="30" height="30" patternUnits="userSpaceOnUse">
-              <path d="M 30 0 L 0 0 0 30" fill="none" stroke={gridLineStroke} strokeWidth="1" />
-            </pattern>
-            <linearGradient id="mapboxRouteGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#0ea5e9" />
-              <stop offset="50%" stopColor="#f59e0b" />
-              <stop offset="100%" stopColor="#10b981" />
-            </linearGradient>
-            <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur stdDeviation="3" result="glow" />
-              <feComposite in="SourceGraphic" in2="glow" operator="over" />
-            </filter>
-          </defs>
-
-          <rect width="100%" height="100%" fill={`url(#mapbox-grid-${mapStyle})`} opacity="0.8" />
-
-          {/* Urban Greenery / Parks / Water Bodies in Outdoors & Satellite */}
-          {(isOutdoors || isSatellite) && (
-            <>
-              <circle cx="25%" cy="30%" r="60" fill={isSatellite ? '#15331f' : '#d1e7dd'} opacity="0.6" />
-              <circle cx="75%" cy="75%" r="80" fill={isSatellite ? '#15331f' : '#d1e7dd'} opacity="0.6" />
-              <path
-                d="M 10 90 Q 40 70 80 85 T 100 80"
-                stroke={isSatellite ? '#0d2838' : '#bfe3f7'}
-                strokeWidth="12"
-                fill="none"
-                opacity="0.7"
-              />
-            </>
-          )}
-
-          {/* Primary Arterial Roads & Highways (Harare / Bulawayo) */}
-          {city === 'Harare' ? (
-            <>
-              {/* Samora Machel Ave / Mutare Rd Highway */}
-              <path d="M 0 52 Q 50 50 100 48" stroke={arterialStroke} strokeWidth="6" fill="none" strokeLinecap="round" />
-              <path d="M 0 52 Q 50 50 100 48" stroke={isDark ? '#38bdf8' : '#f59e0b'} strokeWidth="1.5" fill="none" strokeDasharray="5 5" opacity="0.6" />
-
-              {/* Julius Nyerere / Simon Mazorodze Rd */}
-              <path d="M 52 0 Q 50 50 48 100" stroke={arterialStroke} strokeWidth="6" fill="none" strokeLinecap="round" />
-
-              {/* Borrowdale Rd Corridor */}
-              <path d="M 50 50 Q 65 30 85 10" stroke={arterialStroke} strokeWidth="5" fill="none" strokeLinecap="round" />
-
-              {/* Airport Rd Corridor */}
-              <path d="M 50 50 Q 65 75 90 95" stroke={arterialStroke} strokeWidth="5" fill="none" strokeLinecap="round" />
-
-              {/* Lomagundi / Kirkman Rd */}
-              <path d="M 50 50 Q 30 30 15 15" stroke={arterialStroke} strokeWidth="5" fill="none" strokeLinecap="round" />
-
-              {/* Secondary Suburb Connectors */}
-              <path d="M 20 20 L 80 20" stroke={roadStroke} strokeWidth="3" fill="none" />
-              <path d="M 20 80 L 80 80" stroke={roadStroke} strokeWidth="3" fill="none" />
-              <path d="M 15 50 L 85 50" stroke={roadStroke} strokeWidth="2.5" fill="none" />
-            </>
-          ) : (
-            <>
-              {/* Bulawayo Grid & Arterials (JMN Nkomo, Gwanda Rd, Plumtree Rd) */}
-              <path d="M 0 50 L 100 50" stroke={arterialStroke} strokeWidth="6" fill="none" />
-              <path d="M 50 0 L 50 100" stroke={arterialStroke} strokeWidth="6" fill="none" />
-              <path d="M 50 50 L 85 85" stroke={arterialStroke} strokeWidth="5" fill="none" />
-              <path d="M 50 50 L 15 15" stroke={arterialStroke} strokeWidth="5" fill="none" />
-              <circle cx="50%" cy="50%" r="70" stroke={roadStroke} strokeWidth="3" fill="none" />
-            </>
-          )}
-
-          {/* Active Route Polyline (Mapbox Navigation Style) */}
-          {pickupCoord && destCoord && (
-            <>
-              {/* Route Glow Underlay */}
-              <path
-                d={`M ${pickupCoord.x}% ${pickupCoord.y}% Q ${(pickupCoord.x + destCoord.x) / 2 + 5}% ${(pickupCoord.y + destCoord.y) / 2 - 5}% ${destCoord.x}% ${destCoord.y}%`}
-                fill="none"
-                stroke={isDark ? '#0284c7' : '#0369a1'}
-                strokeWidth="8"
-                strokeOpacity="0.4"
-                strokeLinecap="round"
-              />
-              {/* Main Mapbox Vector Line */}
-              <path
-                d={`M ${pickupCoord.x}% ${pickupCoord.y}% Q ${(pickupCoord.x + destCoord.x) / 2 + 5}% ${(pickupCoord.y + destCoord.y) / 2 - 5}% ${destCoord.x}% ${destCoord.y}%`}
-                fill="none"
-                stroke="url(#mapboxRouteGradient)"
-                strokeWidth="4"
-                strokeLinecap="round"
-                strokeDasharray="6 3"
-              />
-            </>
-          )}
-        </svg>
-
-        {/* Nearby Idle Drivers (Mapbox Radar Pins) */}
-        {nearbyDrivers.map((driver) => {
-          const pos = project(driver.lat, driver.lng);
-          return (
-            <div
-              key={driver.id}
-              style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
-              className="absolute -translate-x-1/2 -translate-y-1/2 group cursor-pointer transition-all duration-700 z-10"
-            >
-              <div className="relative flex items-center justify-center">
-                <span className="absolute w-7 h-7 bg-sky-500/25 rounded-full animate-ping" />
-                <div className="w-6 h-6 bg-slate-900 border-2 border-amber-400 rounded-full flex items-center justify-center text-amber-300 shadow-md">
-                  {driver.category === 'motorbike' ? (
-                    <Bike className="w-3 h-3" />
-                  ) : driver.category === 'xl' ? (
-                    <Users className="w-3 h-3" />
-                  ) : driver.category === 'comfort' ? (
-                    <Sparkles className="w-3 h-3" />
-                  ) : (
-                    <Car className="w-3 h-3" />
-                  )}
-                </div>
-              </div>
-              {/* Tooltip on hover */}
-              <div className="absolute bottom-7 left-1/2 -translate-x-1/2 hidden group-hover:flex flex-col items-center bg-slate-950/95 border border-slate-700 text-slate-200 px-2 py-1 rounded text-[10px] font-mono whitespace-nowrap shadow-xl z-30">
-                <span className="font-bold text-white">{driver.name}</span>
-                <span className="text-amber-400 font-bold">{driver.plate}</span>
-                <span className="text-[8px] text-sky-300 uppercase">Mapbox Telemetry</span>
-              </div>
-            </div>
-          );
-        })}
-
-        {/* Custom Dropped / Active Pin */}
-        {activePin && (
-          <div
-            style={{ left: `${activePin.x}%`, top: `${activePin.y}%` }}
-            className="absolute -translate-x-1/2 -translate-y-1/2 z-20 animate-bounce"
-          >
-            <div className="flex flex-col items-center">
-              <div className="bg-sky-600 text-white p-1 rounded-full shadow-lg border-2 border-white">
-                <MapPin className="w-4 h-4 fill-white" />
-              </div>
-              <div className="bg-slate-950/95 text-sky-300 font-mono text-[9px] px-2 py-0.5 rounded mt-1 border border-sky-600 whitespace-nowrap shadow-md">
-                {activePin.address}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Pickup Location Marker */}
-        {pickupCoord && (
-          <div
-            style={{ left: `${pickupCoord.x}%`, top: `${pickupCoord.y}%` }}
-            className="absolute -translate-x-1/2 -translate-y-1/2 z-20"
-          >
-            <div className="flex flex-col items-center">
-              <div className="bg-emerald-600 text-white p-1 rounded-full shadow-md border-2 border-white">
-                <MapPin className="w-3.5 h-3.5 fill-white" />
-              </div>
-              <div className="bg-slate-900/95 text-emerald-300 font-mono font-bold text-[9px] px-1.5 py-0.2 rounded mt-0.5 border border-emerald-500/40 whitespace-nowrap">
-                PICKUP: {pickup?.neighborhood || 'START'}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Destination Location Marker */}
-        {destCoord && (
-          <div
-            style={{ left: `${destCoord.x}%`, top: `${destCoord.y}%` }}
-            className="absolute -translate-x-1/2 -translate-y-1/2 z-20"
-          >
-            <div className="flex flex-col items-center">
-              <div className="bg-rose-600 text-white p-1 rounded-full shadow-md border-2 border-white animate-pulse">
-                <MapPin className="w-3.5 h-3.5 fill-white" />
-              </div>
-              <div className="bg-slate-900/95 text-rose-300 font-mono font-bold text-[9px] px-1.5 py-0.2 rounded mt-0.5 border border-rose-500/40 whitespace-nowrap">
-                DROPOFF: {destination?.neighborhood || 'DEST'}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Live Moving Vehicle Marker */}
-        {currentCarPos && (
-          <div
-            style={{ left: `${currentCarPos.x}%`, top: `${currentCarPos.y}%` }}
-            className="absolute -translate-x-1/2 -translate-y-1/2 z-30 transition-all duration-300"
-          >
-            <div className="relative flex items-center justify-center">
-              <div className="w-8 h-8 bg-sky-600 text-white rounded-full flex items-center justify-center shadow-xl border-2 border-amber-400">
-                <Car className="w-4 h-4 fill-white" />
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Mapbox Controls & Layer Switcher Overlay */}
+      {/* Map Style & Zoom Controls */}
       <div className="absolute top-2.5 right-2.5 flex flex-col gap-1.5 z-20">
-        {/* Layer Selector */}
         {showLayerToggle && (
           <div className="flex bg-slate-900/90 backdrop-blur-md border border-slate-700 rounded-md p-0.5 shadow-md">
             <button
-              onClick={() => setMapStyle('streets')}
-              title="Mapbox Streets (Default)"
+              onClick={() => setCurrentStyle('light')}
+              title="Carto Positron Light"
               className={`px-1.5 py-1 rounded text-[9px] font-bold transition-all ${
-                mapStyle === 'streets' ? 'bg-sky-700 text-white shadow-xs' : 'text-slate-300 hover:text-white'
+                currentStyle === 'light' ? 'bg-sky-700 text-white shadow-xs' : 'text-slate-300 hover:text-white'
               }`}
             >
-              Streets
+              Light
             </button>
             <button
-              onClick={() => setMapStyle('navigation-dark')}
-              title="Mapbox Navigation Dark"
+              onClick={() => setCurrentStyle('streets')}
+              title="OpenStreetMap Standard"
               className={`px-1.5 py-1 rounded text-[9px] font-bold transition-all ${
-                mapStyle === 'navigation-dark' ? 'bg-sky-700 text-white shadow-xs' : 'text-slate-300 hover:text-white'
+                currentStyle === 'streets' ? 'bg-sky-700 text-white shadow-xs' : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              OSM
+            </button>
+            <button
+              onClick={() => setCurrentStyle('dark')}
+              title="Dark Matter"
+              className={`px-1.5 py-1 rounded text-[9px] font-bold transition-all ${
+                currentStyle === 'dark' ? 'bg-sky-700 text-white shadow-xs' : 'text-slate-300 hover:text-white'
               }`}
             >
               Dark
             </button>
             <button
-              onClick={() => setMapStyle('satellite')}
-              title="Mapbox Satellite Streets"
+              onClick={() => setCurrentStyle('satellite')}
+              title="Satellite Imagery"
               className={`px-1.5 py-1 rounded text-[9px] font-bold transition-all ${
-                mapStyle === 'satellite' ? 'bg-sky-700 text-white shadow-xs' : 'text-slate-300 hover:text-white'
+                currentStyle === 'satellite' ? 'bg-sky-700 text-white shadow-xs' : 'text-slate-300 hover:text-white'
               }`}
             >
-              Satellite
-            </button>
-            <button
-              onClick={() => setMapStyle('outdoors')}
-              title="Mapbox Outdoors"
-              className={`px-1.5 py-1 rounded text-[9px] font-bold transition-all ${
-                mapStyle === 'outdoors' ? 'bg-sky-700 text-white shadow-xs' : 'text-slate-300 hover:text-white'
-              }`}
-            >
-              Terrain
+              Sat
             </button>
           </div>
         )}
 
-        {/* Zoom & 3D Tilt Controls */}
         <div className="flex flex-col bg-slate-900/90 backdrop-blur-md border border-slate-700 rounded-md shadow-md overflow-hidden self-end">
           <button
-            onClick={() => setZoomLevel((z) => Math.min(z + 0.2, 2))}
+            onClick={handleZoomIn}
             title="Zoom In"
             className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 border-b border-slate-800"
           >
             <ZoomIn className="w-3.5 h-3.5" />
           </button>
           <button
-            onClick={() => setZoomLevel((z) => Math.max(z - 0.2, 0.6))}
+            onClick={handleZoomOut}
             title="Zoom Out"
             className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 border-b border-slate-800"
           >
             <ZoomOut className="w-3.5 h-3.5" />
           </button>
           <button
-            onClick={() => setIs3DMode(!is3DMode)}
-            title="Toggle 3D Perspective"
-            className={`p-1.5 transition-colors ${
-              is3DMode ? 'text-amber-400 bg-sky-950 font-bold' : 'text-slate-300 hover:text-white hover:bg-slate-800'
-            }`}
+            onClick={handleRecenter}
+            title="Re-center Map"
+            className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800"
           >
-            <span className="text-[9px] font-mono font-bold">3D</span>
+            <Crosshair className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
-      {/* Mapbox Telemetry & City Indicator (Top-Left) */}
+      {/* City Status Badge */}
       {!showSearchBar && (
-        <div className="absolute top-2.5 left-2.5 px-2 py-1 bg-slate-900/90 backdrop-blur-md border border-slate-700 rounded text-[10px] font-mono text-slate-200 flex items-center gap-1.5 shadow-sm">
+        <div className="absolute top-2.5 left-2.5 px-2 py-1 bg-slate-900/90 backdrop-blur-md border border-slate-700 rounded text-[10px] font-mono text-slate-200 flex items-center gap-1.5 shadow-sm z-20">
           <Navigation className="w-3 h-3 text-amber-400" />
-          <span className="font-bold uppercase tracking-wider">{city} MAPBOX RADAR</span>
+          <span className="font-bold uppercase tracking-wider">{city} GPS RADAR</span>
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-0.5" />
         </div>
       )}
 
-      {/* Mapbox Official Attribution & Legal Watermark (Bottom-Left & Bottom-Right) */}
-      <div className="absolute bottom-1.5 left-2.5 flex items-center gap-1.5 text-[9px] font-mono text-slate-400 bg-slate-950/80 px-2 py-0.5 rounded border border-slate-800 backdrop-blur-xs">
-        <span className="font-bold text-white tracking-tight">mapbox</span>
-        <span className="text-slate-500">|</span>
-        <span>© OpenStreetMap</span>
-      </div>
-
-      <div className="absolute bottom-1.5 right-2.5 flex items-center gap-1 text-[9px] font-mono text-sky-300 bg-slate-950/80 px-2 py-0.5 rounded border border-slate-800">
-        <Shield className="w-3 h-3 text-amber-400" />
-        <span>MAPBOX GEOCODING V6</span>
+      {/* Attribution Watermark */}
+      <div className="absolute bottom-1.5 left-2.5 flex items-center gap-1 text-[9px] font-mono text-slate-500 bg-white/90 px-1.5 py-0.5 rounded border border-slate-200 backdrop-blur-xs z-20">
+        <span>© OpenStreetMap &amp; Leaflet</span>
       </div>
     </div>
   );

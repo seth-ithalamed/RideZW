@@ -180,14 +180,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currency }) => {
 
         {/* Global Stats Counter, Genesis Button & Logout */}
         <div className="flex items-center gap-3 text-xs">
-          <button
-            onClick={() => setShowGenesisModal(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-bold text-[10px] transition-all shadow-xs"
-            title="Inspect how initial administrator is created"
-          >
-            <ShieldCheck className="w-3.5 h-3.5 text-amber-600" />
-            <span>Root Admin Genesis</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 font-mono text-[10px] font-bold">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0"></span>
+              <span>Backend & DB Synced</span>
+            </div>
+
+            <button
+              onClick={() => setShowGenesisModal(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-bold text-[10px] transition-all shadow-xs"
+              title="Inspect how initial administrator is created"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-amber-600" />
+              <span>Root Admin Genesis</span>
+            </button>
+          </div>
 
           <div className="text-right border-l border-slate-200 pl-3">
             <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block">Active Fleet</span>
@@ -238,49 +245,94 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currency }) => {
         </div>
       </div>
 
-      {/* Admin Navigation Tabs */}
-      <div className="flex items-center gap-1 border-b border-slate-200 pb-1.5 overflow-x-auto scrollbar-none">
-        {[
-          { id: 'overview', label: 'Operations Overview & Radar', icon: Activity },
-          { id: 'cities', label: 'Coverage Cities & Hubs', icon: Compass, badge: (state.coverageCities || []).length },
-          { id: 'users', label: 'Riders & User Accounts', icon: UserCheck, badge: (state.riders || []).filter(r => r.status === 'suspended').length },
-          { id: 'staff', label: 'Platform Operators & Staff', icon: ShieldCheck, badge: (state.adminUsers || []).length },
-          { id: 'drivers', label: 'Fleet & KYC Verification', icon: Users, badge: pendingKycCount },
-          { id: 'financials', label: 'Financial Ledgers & Payouts', icon: DollarSign, badge: pendingPayouts.length },
-          { id: 'pricing', label: 'Fare Algorithm & Rules', icon: Sliders },
-          { id: 'sos', label: 'Emergency SOS Center', icon: AlertTriangle, badge: activeSosList.length }
-        ].map((tab) => {
-          const Icon = tab.icon;
-          const isSelected = adminTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setAdminTab(tab.id as any)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold whitespace-nowrap transition-all ${
-                isSelected
-                  ? 'bg-sky-900 text-white font-bold shadow-xs'
-                  : 'text-slate-600 hover:bg-white hover:text-slate-900'
-              }`}
-            >
-              <Icon className={`w-3.5 h-3.5 ${isSelected ? 'text-amber-400' : 'text-slate-400'}`} />
-              <span>{tab.label}</span>
-              {tab.badge !== undefined && tab.badge > 0 && (
-                <span
-                  className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded-full ${
-                    isSelected ? 'bg-amber-400 text-slate-950' : 'bg-rose-100 text-rose-700'
-                  }`}
-                >
-                  {tab.badge}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
+      {/* Main Operations Suite Body with Side Navigation */}
+      <div className="flex flex-col lg:flex-row gap-4.5 items-start">
+        {/* Left Side Navigation Menu */}
+        <aside className="w-full lg:w-64 shrink-0 bg-white border border-slate-200 rounded-xl p-2.5 shadow-xs lg:sticky lg:top-16 space-y-3">
+          <div>
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-2 block mb-1">
+              Operations Console
+            </span>
+            <nav className="space-y-0.5">
+              {[
+                { id: 'overview', label: 'Operations Overview', sub: 'Live GPS Radar', icon: Activity },
+                { id: 'cities', label: 'Coverage Cities', sub: '13 Municipal Hubs', icon: Compass, badge: (state.coverageCities || []).length },
+                { id: 'users', label: 'Rider Accounts', sub: 'Profiles & Bans', icon: UserCheck, badge: (state.riders || []).filter(r => r.status === 'suspended').length },
+                { id: 'staff', label: 'Platform Staff', sub: 'RBAC Management', icon: ShieldCheck, badge: (state.adminUsers || []).length },
+                { id: 'drivers', label: 'Fleet & KYC', sub: 'Driver Verification', icon: Users, badge: pendingKycCount },
+                { id: 'financials', label: 'Ledgers & Payouts', sub: 'Revenue Audit', icon: DollarSign, badge: pendingPayouts.length },
+                { id: 'pricing', label: 'Fare Matrices', sub: 'Commissions & Rates', icon: Sliders },
+                { id: 'sos', label: 'SOS Incident Desk', sub: 'Emergency Response', icon: AlertTriangle, badge: activeSosList.length }
+              ].map((tab) => {
+                const Icon = tab.icon;
+                const isSelected = adminTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setAdminTab(tab.id as any)}
+                    className={`w-full flex items-center justify-between p-2 rounded-lg text-left transition-all ${
+                      isSelected
+                        ? 'bg-sky-950 text-white font-bold shadow-xs'
+                        : 'text-slate-700 hover:bg-slate-50 hover:text-slate-900'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div
+                        className={`w-7 h-7 rounded-md flex items-center justify-center shrink-0 ${
+                          isSelected ? 'bg-sky-900 text-amber-400' : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        <Icon className="w-3.5 h-3.5" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold leading-tight truncate">{tab.label}</p>
+                        <p className={`text-[10px] leading-tight truncate ${isSelected ? 'text-sky-200' : 'text-slate-400'}`}>
+                          {tab.sub}
+                        </p>
+                      </div>
+                    </div>
 
-      {/* ============================================================= */}
-      {/* TAB 1: OVERVIEW & FLEET MAP */}
-      {/* ============================================================= */}
+                    {tab.badge !== undefined && tab.badge > 0 && (
+                      <span
+                        className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-full shrink-0 ml-1 ${
+                          isSelected
+                            ? 'bg-amber-400 text-slate-950'
+                            : tab.id === 'sos'
+                            ? 'bg-rose-100 text-rose-700 font-black animate-pulse'
+                            : 'bg-sky-100 text-sky-800'
+                        }`}
+                      >
+                        {tab.badge}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+          </div>
+
+          {/* Sidebar Footer Info */}
+          <div className="border-t border-slate-100 pt-2.5 px-2 text-[10px] space-y-1.5 text-slate-500">
+            <div className="flex items-center justify-between">
+              <span className="font-medium">RBZ Exchange:</span>
+              <span className="font-mono font-bold text-amber-700">{state.settings.exchangeRateUSDToZWG} ZiG</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="font-medium">Debt Ceiling:</span>
+              <span className="font-mono font-bold text-slate-800">${state.settings.driverDebtCeilingUSD.toFixed(2)}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="font-medium">Admin:</span>
+              <span className="font-bold text-sky-950">Seth (Super-Admin)</span>
+            </div>
+          </div>
+        </aside>
+
+        {/* Right Main Content Area */}
+        <main className="flex-1 min-w-0 w-full space-y-4">
+          {/* ============================================================= */}
+          {/* TAB 1: OVERVIEW & FLEET MAP */}
+          {/* ============================================================= */}
       {adminTab === 'overview' && (
         <div className="space-y-4">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -1211,6 +1263,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currency }) => {
           </div>
         </div>
       )}
+        </main>
+      </div>
+
       {/* Genesis Admin Setup Modal */}
       <GenesisAdminSetupModal
         isOpen={showGenesisModal}

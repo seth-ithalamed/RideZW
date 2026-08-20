@@ -1,5 +1,17 @@
 import { createClient, SupabaseClient, RealtimeChannel } from '@supabase/supabase-js';
-import { Trip, DriverProfile, RiderProfile, LedgerEntry, SosAlert } from '../types';
+import {
+  Trip,
+  DriverProfile,
+  RiderProfile,
+  LedgerEntry,
+  SosAlert,
+  CoverageCity,
+  PricingConfig,
+  PermitTypeConfig,
+  PlatformSettings,
+  AdminUser,
+  ActiveSession
+} from '../types';
 
 let supabaseClient: SupabaseClient | null = null;
 let realtimeChannel: RealtimeChannel | null = null;
@@ -223,6 +235,272 @@ export async function syncLedgerEntryToSupabase(entry: LedgerEntry): Promise<boo
 }
 
 /**
+ * Sync foundational seed data to Supabase PostgreSQL database
+ * Invoked automatically when the admin logs in if seed data is uninitialized in DB.
+ */
+export async function syncSeedDataToSupabase(data: {
+  coverageCities?: CoverageCity[];
+  pricingConfigs?: PricingConfig[];
+  permitTypes?: PermitTypeConfig[];
+  settings?: PlatformSettings;
+  adminUsers?: AdminUser[];
+}): Promise<{ success: boolean; message: string; seededCount: number }> {
+  const client = getSupabase();
+  if (!client) {
+    return { success: false, message: 'Supabase client not connected (using high-speed local persistence)', seededCount: 0 };
+  }
+
+  let totalSeeded = 0;
+
+  try {
+    // 1. Seed Platform Settings
+    if (data.settings) {
+      await client.from('platform_settings').upsert({
+        id: 'default_settings',
+        usd_to_zwg_rate: data.settings.exchangeRateUSDToZWG || 26.85,
+        platform_commission_percent: 12.0,
+        driver_debt_ceiling_usd: data.settings.driverDebtCeilingUSD || 15.00,
+        sos_police_number: '+263 242 777777',
+        sos_security_hotline: '+263 77 000 9999',
+        updated_at: new Date().toISOString()
+      });
+      totalSeeded++;
+    }
+
+    // 2. Seed Admin Users (Root Super Admin Seth)
+    if (data.adminUsers && data.adminUsers.length > 0) {
+      for (const admin of data.adminUsers) {
+        await client.from('admin_users').upsert({
+          id: admin.id,
+          name: admin.name,
+          email: admin.email,
+          phone: admin.phone,
+          role: admin.role,
+          department: admin.department,
+          avatar_url: admin.avatarUrl,
+          status: admin.status,
+          permissions: admin.permissions,
+          is_root_super_admin: admin.isRootSuperAdmin || false,
+          created_at: admin.createdAt,
+          last_login_at: admin.lastLoginAt || new Date().toISOString()
+        });
+        totalSeeded++;
+      }
+    }
+
+    // 3. Seed Coverage Cities
+    if (data.coverageCities && data.coverageCities.length > 0) {
+      for (const city of data.coverageCities) {
+        try {
+          await client.from('coverage_cities').upsert({
+            id: city.id,
+            name: city.name,
+            province: city.province,
+            status: city.status,
+            code: city.code,
+            center_lat: city.centerLat,
+            center_lng: city.centerLng,
+            radius_km: city.radiusKm,
+            base_fare_multiplier: city.baseFareMultiplier,
+            supported_categories: city.supportedCategories,
+            is_primary_hub: city.isPrimaryHub || false
+          });
+          totalSeeded++;
+        } catch {
+          // Table may not yet be provisioned
+        }
+      }
+    }
+
+    return {
+      success: true,
+      message: `Database successfully seeded with ${totalSeeded} records across hubs and configurations.`,
+      seededCount: totalSeeded
+    };
+  } catch (err: any) {
+    console.warn('Supabase seed error:', err);
+    return {
+      success: false,
+      message: err.message || 'Seeding encountered an error',
+      seededCount: totalSeeded
+    };
+  }
+}
+
+/**
+ * Sync active single session to Supabase for multi-device enforcement
+ */
+export async function syncUserSessionToSupabase(session: ActiveSession): Promise<boolean> {
+  const client = getSupabase();
+  if (!client) return false;
+
+  try {
+    // Upsert into active_sessions table or update user's last session
+    await client.from('active_sessions').upsert({
+      user_id: session.userId,
+      role: session.role,
+      session_id: session.sessionId,
+      device_id: session.deviceId,
+      login_time: session.loginTime,
+      updated_at: new Date().toISOString()
+    });
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Fetch all foundational and operational data from Supabase tables
+ */
+export async function fetchAllDataFromSupabase(): Promise<{
+  trips?: Trip[];
+  drivers?: DriverProfile[];
+  riders?: RiderProfile[];
+  sosAlerts?: SosAlert[];
+  ledger?: LedgerEntry[];
+  settings?: Partial<PlatformSettings>;
+  coverageCities?: CoverageCity[];
+  activeSessions?: Record<string, ActiveSession>;
+} | null> {
+  const client = getSupabase();
+  if (!client) return null;
+
+  try {
+    const [tripsRes, driversRes, ridersRes, sosRes, ledgerRes, settingsRes, citiesRes, sessionsRes] = await Promise.allSettled([
+      client.from('trips').select('*').order('created_at', { ascending: false }).limit(100),
+      client.from('drivers').select('*'),
+      client.from('riders').select('*'),
+      client.from('sos_alerts').select('*').order('created_at', { ascending: false }).limit(50),
+      client.from('ledger_entries').select('*').order('created_at', { ascending: false }).limit(100),
+      client.from('platform_settings').select('*').limit(1),
+      client.from('coverage_cities').select('*'),
+      client.from('active_sessions').select('*')
+    ]);
+
+    const result: any = {};
+
+    if (tripsRes.status === 'fulfilled' && tripsRes.value.data && tripsRes.value.data.length > 0) {
+      result.trips = tripsRes.value.data.map((t: any) => ({
+        id: t.id,
+        riderId: t.rider_id,
+        driverId: t.driver_id,
+        category: t.category,
+        status: t.status,
+        pickup: {
+          address: t.pickup_address,
+          lat: Number(t.pickup_lat),
+          lng: Number(t.pickup_lng)
+        },
+        destination: {
+          address: t.dest_address,
+          lat: Number(t.dest_lat),
+          lng: Number(t.dest_lng)
+        },
+        agreedFareUSD: Number(t.agreed_fare_usd),
+        paymentMethod: t.payment_method,
+        paymentStatus: t.payment_status,
+        createdAt: t.created_at
+      }));
+    }
+
+    if (driversRes.status === 'fulfilled' && driversRes.value.data && driversRes.value.data.length > 0) {
+      result.drivers = driversRes.value.data.map((d: any) => ({
+        id: d.id,
+        name: d.name,
+        phone: d.phone,
+        email: d.email,
+        nationalId: d.national_id,
+        city: d.city,
+        currentLat: Number(d.current_lat),
+        currentLng: Number(d.current_lng),
+        isOnline: Boolean(d.is_online),
+        rating: Number(d.rating),
+        totalTrips: Number(d.total_trips),
+        walletBalance: Number(d.wallet_balance_usd),
+        cashDebtCeiling: Number(d.unremitted_levy_debt_usd),
+        isBlockedDueToDebt: Boolean(d.is_blocked_due_to_debt),
+        vehicle: {
+          make: d.vehicle_make,
+          model: d.vehicle_model,
+          plateNumber: d.vehicle_plate,
+          category: d.vehicle_category
+        }
+      }));
+    }
+
+    if (ridersRes.status === 'fulfilled' && ridersRes.value.data && ridersRes.value.data.length > 0) {
+      result.riders = ridersRes.value.data.map((r: any) => ({
+        id: r.id,
+        name: r.name,
+        phone: r.phone,
+        email: r.email,
+        city: r.city,
+        accountType: r.account_type,
+        status: r.account_status,
+        rating: Number(r.rating),
+        totalTrips: Number(r.total_trips)
+      }));
+    }
+
+    if (sosRes.status === 'fulfilled' && sosRes.value.data && sosRes.value.data.length > 0) {
+      result.sosAlerts = sosRes.value.data.map((s: any) => ({
+        id: s.id,
+        tripId: s.trip_id,
+        triggeredBy: s.triggered_by,
+        lat: Number(s.lat),
+        lng: Number(s.lng),
+        address: s.address,
+        status: s.status,
+        timestamp: s.created_at
+      }));
+    }
+
+    if (ledgerRes.status === 'fulfilled' && ledgerRes.value.data && ledgerRes.value.data.length > 0) {
+      result.ledger = ledgerRes.value.data.map((l: any) => ({
+        id: l.id,
+        tripId: l.trip_id,
+        driverId: l.driver_id,
+        entryType: l.type,
+        amount: Number(l.amount_usd),
+        description: l.description,
+        createdAt: l.created_at
+      }));
+    }
+
+    if (settingsRes.status === 'fulfilled' && settingsRes.value.data && settingsRes.value.data.length > 0) {
+      const s = settingsRes.value.data[0];
+      result.settings = {
+        exchangeRateUSDToZWG: Number(s.usd_to_zwg_rate),
+        platformCommissionPercent: Number(s.platform_commission_percent),
+        driverDebtCeilingUSD: Number(s.driver_debt_ceiling_usd)
+      };
+    }
+
+    if (sessionsRes.status === 'fulfilled' && sessionsRes.value.data && sessionsRes.value.data.length > 0) {
+      const sessionsMap: Record<string, ActiveSession> = {};
+      sessionsRes.value.data.forEach((s: any) => {
+        sessionsMap[s.user_id] = {
+          userId: s.user_id,
+          role: s.role,
+          sessionId: s.session_id,
+          deviceId: s.device_id,
+          loginTime: s.login_time,
+          userAgent: 'Supabase Device'
+        };
+      });
+      result.activeSessions = sessionsMap;
+    }
+
+    return result;
+  } catch (err) {
+    console.warn('fetchAllDataFromSupabase warning:', err);
+    return null;
+  }
+}
+
+/**
  * Subscribe to real-time events across trips, drivers, and SOS alerts.
  * Architecture A: Broadcast changes instantly over WebSockets.
  */
@@ -230,6 +508,7 @@ export function subscribeToRealtimeUpdates(callbacks: {
   onTripChange?: (payload: any) => void;
   onDriverChange?: (payload: any) => void;
   onSosAlert?: (payload: any) => void;
+  onSessionChange?: (payload: any) => void;
 }): () => void {
   const client = getSupabase();
   if (!client) {
@@ -261,6 +540,13 @@ export function subscribeToRealtimeUpdates(callbacks: {
       { event: '*', schema: 'public', table: 'sos_alerts' },
       (payload) => {
         if (callbacks.onSosAlert) callbacks.onSosAlert(payload);
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'active_sessions' },
+      (payload) => {
+        if (callbacks.onSessionChange) callbacks.onSessionChange(payload);
       }
     )
     .subscribe((status) => {

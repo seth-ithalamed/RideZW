@@ -41,7 +41,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [signInIdentifier, setSignInIdentifier] = useState(
     initialRole === 'admin' ? 'seth.bbd@gmail.com' : '+263 77 123 4567'
   );
-  const [signInPassword, setSignInPassword] = useState('GENESIS-ZW-2026-ROOT-KEY');
+  const [signInPassword, setSignInPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [authMethod, setAuthMethod] = useState<'otp' | 'password'>('password');
   const [otpCode, setOtpCode] = useState('');
@@ -68,13 +68,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setSelectedRole(role);
     setAuthError('');
     setSuccessMessage(null);
+    setSignInPassword('');
     if (role === 'admin') {
       setSignInIdentifier('seth.bbd@gmail.com');
-      setSignInPassword('GENESIS-ZW-2026-ROOT-KEY');
       setAuthMethod('password');
     } else {
       setSignInIdentifier('+263 77 123 4567');
-      setSignInPassword('123456');
     }
   };
 
@@ -108,11 +107,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     try {
       if (selectedRole === 'admin') {
         if (!signInIdentifier.trim()) {
-          setAuthError('Please enter your corporate email.');
+          setAuthError('Please enter your corporate administrator email.');
           setIsSubmitting(false);
           return;
         }
-        store.loginAsAdmin(signInIdentifier);
+        if (!signInPassword.trim()) {
+          setAuthError('Please enter your administrator password.');
+          setIsSubmitting(false);
+          return;
+        }
+        store.loginAsAdmin(signInIdentifier, signInPassword);
         setIsSubmitting(false);
         onClose();
         return;
@@ -317,12 +321,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </label>
                 <div className="flex items-center bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-2 focus-within:ring-2 focus-within:ring-sky-800 focus-within:border-sky-800">
                   {selectedRole === 'admin' ? (
-                    <KeyRound className="w-4 h-4 text-slate-400 mr-2 shrink-0" />
+                    <KeyRound className="w-4 h-4 text-amber-600 mr-2 shrink-0" />
                   ) : (
                     <Phone className="w-4 h-4 text-slate-400 mr-2 shrink-0" />
                   )}
                   <input
-                    type={selectedRole === 'admin' ? 'text' : 'tel'}
+                    type={selectedRole === 'admin' ? 'email' : 'tel'}
                     required
                     value={signInIdentifier}
                     onChange={(e) => setSignInIdentifier(e.target.value)}
@@ -332,22 +336,56 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </div>
               </div>
 
-              {/* Password or SMS OTP */}
-              {authMethod === 'password' || selectedRole === 'admin' ? (
+              {/* For Admin: Security Password Field (Clean and Not Auto-Populated) */}
+              {selectedRole === 'admin' ? (
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-700 uppercase tracking-tight block mb-1">
+                      Administrator Security Password
+                    </label>
+                    <div className="flex items-center bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-2 focus-within:ring-2 focus-within:ring-sky-800 focus-within:border-sky-800">
+                      <Lock className="w-4 h-4 text-amber-600 mr-2 shrink-0" />
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        value={signInPassword}
+                        onChange={(e) => setSignInPassword(e.target.value)}
+                        placeholder="Enter administrator password"
+                        className="w-full bg-transparent text-xs text-slate-900 font-mono focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="text-slate-400 hover:text-slate-600 ml-1"
+                      >
+                        {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs text-slate-700 flex items-start gap-2">
+                    <ShieldCheck className="w-4 h-4 text-sky-700 mt-0.5 shrink-0" />
+                    <div className="text-[11px] leading-relaxed">
+                      <p className="font-bold text-slate-900">Single-Instance Session Enforcement</p>
+                      <p className="text-slate-600 mt-0.5">
+                        Signing in will establish an exclusive session token. Any active session on another device will be terminated automatically. Database seeding runs upon verification.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : authMethod === 'password' ? (
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[11px] font-bold text-slate-700 uppercase tracking-tight">
-                      {selectedRole === 'admin' ? 'Master Security Key / Password' : 'Password'}
+                      Password
                     </label>
-                    {selectedRole !== 'admin' && (
-                      <button
-                        type="button"
-                        onClick={() => setAuthMethod('otp')}
-                        className="text-[10px] text-sky-800 font-bold hover:underline"
-                      >
-                        Use SMS OTP instead
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => setAuthMethod('otp')}
+                      className="text-[10px] text-sky-800 font-bold hover:underline"
+                    >
+                      Use SMS OTP instead
+                    </button>
                   </div>
                   <div className="flex items-center bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-2 focus-within:ring-2 focus-within:ring-sky-800 focus-within:border-sky-800">
                     <Lock className="w-4 h-4 text-slate-400 mr-2 shrink-0" />
@@ -356,7 +394,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       required
                       value={signInPassword}
                       onChange={(e) => setSignInPassword(e.target.value)}
-                      placeholder={selectedRole === 'admin' ? 'Enter master security key' : 'Enter password'}
+                      placeholder="Enter password"
                       className="w-full bg-transparent text-xs text-slate-900 font-mono focus:outline-none"
                     />
                     <button

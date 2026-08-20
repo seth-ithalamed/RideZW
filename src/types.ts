@@ -473,3 +473,20 @@ export interface AdminUser {
 }
 
 export type NavigationTab = 'landing' | 'rider' | 'driver' | 'admin';
+
+export interface ActiveSession {
+  userId: string;
+  role: 'rider' | 'driver' | 'admin';
+  sessionId: string;
+  deviceId: string;
+  loginTime: string;
+  ipAddress?: string;
+  userAgent?: string;
+}
+
+export interface SessionTerminationNotice {
+  userId: string;
+  userName: string;
+  terminatedAt: string;
+  reason: string;
+}

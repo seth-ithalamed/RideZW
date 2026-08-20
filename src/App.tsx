@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import { ShieldAlert, LogOut, CheckCircle2, ArrowRight } from 'lucide-react';
 import { store } from './services/store';
 import { Header } from './components/common/Header';
 import { LandingPage } from './components/landing/LandingPage';
@@ -130,6 +131,46 @@ export default function App() {
         initialMode={authMode}
         initialRole={authRole}
       />
+
+      {/* Single-Instance Session Invalidation Notice */}
+      {state.sessionTerminationNotice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white border border-rose-200 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden p-6 space-y-4 text-center">
+            <div className="w-12 h-12 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center mx-auto shadow-inner">
+              <ShieldAlert className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-extrabold text-slate-900">
+                Single-Instance Session Enforcement
+              </h3>
+              <p className="text-xs font-bold text-rose-600 uppercase tracking-wider">
+                Session Terminated on This Device
+              </p>
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 text-xs text-slate-700 text-left space-y-2">
+              <p className="leading-relaxed">
+                The account for <strong className="text-slate-950">{state.sessionTerminationNotice.userName}</strong> was just signed in on another device or window.
+              </p>
+              <div className="p-2 rounded bg-amber-50 border border-amber-200 text-[11px] text-amber-900 font-medium">
+                🔒 <strong>RideZW Security Protocol:</strong> To protect driver wallets, rider funds, and operational dispatch integrity, only <strong>one active device instance</strong> is allowed per credential at any time.
+              </div>
+              <p className="text-[10px] text-slate-400 font-mono">
+                Terminated at: {new Date(state.sessionTerminationNotice.terminatedAt).toLocaleTimeString()}
+              </p>
+            </div>
+
+            <button
+              onClick={() => store.clearSessionNotice()}
+              className="w-full py-3 rounded-xl bg-sky-950 hover:bg-sky-900 text-amber-400 font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2"
+            >
+              <span>Acknowledge & Continue</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
