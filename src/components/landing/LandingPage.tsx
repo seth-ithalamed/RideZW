@@ -19,13 +19,21 @@ import {
   HelpCircle,
   ChevronDown,
   Check,
-  Compass
+  Compass,
+  Bell,
+  Download,
+  Volume2,
+  Zap,
+  Radio,
+  ExternalLink
 } from 'lucide-react';
 import { Currency, Language, VehicleCategory, LocationPoint, CoverageCity } from '../../types';
 import { RideZWLogo } from '../common/RideZWLogo';
 import { MapboxLocationSearchInput } from '../common/MapboxLocationSearchInput';
+import { DownloadAppModal } from '../common/DownloadAppModal';
 import { calculateMapboxRoute } from '../../services/mapboxService';
 import { store } from '../../services/store';
+import { playNotificationSound } from '../../services/notificationService';
 
 interface LandingPageProps {
   currency: Currency;
@@ -39,6 +47,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   onOpenAuth
 }) => {
   const [state, setState] = useState(store.getState());
+  const [isDownloadModalOpen, setIsDownloadModalOpen] = useState(false);
+  const [downloadModalRole, setDownloadModalRole] = useState<'rider' | 'driver'>('rider');
 
   useEffect(() => {
     const unsubscribe = store.subscribe(() => {
@@ -46,6 +56,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({
     });
     return () => unsubscribe();
   }, []);
+
+  const openDownloadModal = (role: 'rider' | 'driver') => {
+    setDownloadModalRole(role);
+    setIsDownloadModalOpen(true);
+  };
+
 
   const [calculatorCity, setCalculatorCity] = useState<string>('Harare');
   const [pickupLocation, setPickupLocation] = useState<LocationPoint>({
@@ -99,6 +115,18 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   };
 
   const faqs = [
+    {
+      q: 'How do drivers and riders download the mobile application?',
+      a: 'You can install RideZW in under 2 seconds via our ultra-fast Progressive Web App (PWA) or download the Android APK. On Android (Chrome), tap "Install App" or "Add to Home screen". On iPhone (iOS Safari), tap the Share button (⎋) and select "Add to Home Screen". It installs directly to your home screen with zero data storage bloat and works smoothly across Econet, NetOne, and Telecel networks.'
+    },
+    {
+      q: 'How do background notifications, audio chimes, and GPS work when the app is minimized?',
+      a: 'When installed on your smartphone, RideZW uses background Web Push APIs and service workers. Drivers receive loud audio chimes and system notifications when new trip requests are broadcast nearby—even when using Google Maps/Waze or when the phone screen is locked. Riders receive immediate push alerts when drivers accept or counter-bid, when their driver is 2 minutes away, and during emergency SOS dispatches.'
+    },
+    {
+      q: 'Can drivers navigate with external GPS apps while RideZW runs in the background?',
+      a: 'Yes! Drivers can tap the "Turn-by-Turn Navigation" button to open Google Maps or Waze. RideZW continues to run in the background, continuously syncing real-time GPS coordinates and pinging the driver with push notifications and audible chimes for any passenger status updates.'
+    },
     {
       q: 'How does bilateral fare bidding work on RideZW?',
       a: 'When requesting a ride, you propose the fare you are comfortable paying. Nearby verified drivers will either accept your offer immediately or propose a transparent counter-bid. You choose the driver, vehicle, and price that best matches your preference.'
@@ -165,6 +193,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               >
                 <Car className="w-4 h-4 text-amber-400" />
                 <span>Drive & Earn Daily</span>
+              </button>
+
+              <button
+                onClick={() => openDownloadModal('rider')}
+                className="flex items-center justify-center gap-2 px-4 py-3.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-amber-300 border border-amber-400/40 font-bold text-xs transition-all shadow-xs"
+              >
+                <Download className="w-4 h-4 text-amber-400" />
+                <span>Get Mobile App</span>
               </button>
             </div>
 
@@ -510,7 +546,184 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       </section>
 
       {/* ========================================================================= */}
-      {/* 4. DRIVER PARTNER PROGRAM */}
+      {/* 4. MOBILE APPS & BACKGROUND NOTIFICATIONS HUB */}
+      {/* ========================================================================= */}
+      <section className="bg-gradient-to-br from-sky-950 via-slate-900 to-[#071c2e] text-white border border-sky-800/50 rounded-3xl p-6 sm:p-10 shadow-2xl relative overflow-hidden space-y-8">
+        <div className="absolute top-0 right-0 w-96 h-96 bg-amber-400/5 rounded-full blur-3xl pointer-events-none" />
+
+        {/* Section Header */}
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-sky-800/60 pb-6">
+          <div className="space-y-2 max-w-2xl">
+            <div className="flex items-center gap-2">
+              <span className="px-2.5 py-0.5 rounded bg-amber-400 text-slate-950 text-[10px] font-mono font-bold uppercase tracking-wider">
+                UNIVERSAL MOBILE APPS
+              </span>
+              <span className="flex items-center gap-1 text-[11px] font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-800 px-2 py-0.5 rounded">
+                <Radio className="w-3 h-3 animate-pulse" />
+                Background Push Active
+              </span>
+            </div>
+            <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
+              Download RideZW For Android & iPhone with Live Background Alerts
+            </h2>
+            <p className="text-xs sm:text-sm text-sky-200/90 leading-relaxed">
+              Install the official mobile apps on your device in seconds. Experience real-time audio chimes for new trip requests, background turn-by-turn navigation, and instant push updates even when your phone is locked.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              onClick={() => openDownloadModal('rider')}
+              className="px-4 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs shadow-md transition-all flex items-center gap-2 hover:scale-[1.02]"
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              <span>Install Rider App</span>
+            </button>
+            <button
+              onClick={() => openDownloadModal('driver')}
+              className="px-4 py-2.5 rounded-xl bg-sky-900 hover:bg-sky-800 border border-sky-700 text-white font-bold text-xs shadow-md transition-all flex items-center gap-2"
+            >
+              <Zap className="w-3.5 h-3.5 text-amber-400" />
+              <span>Install Driver App</span>
+            </button>
+          </div>
+        </div>
+
+        {/* 2-Column App Showcase: Rider App & Driver App */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Column 1: Rider Passenger Mobile App */}
+          <div className="bg-sky-900/40 border border-sky-800/80 rounded-2xl p-5 sm:p-6 space-y-4 hover:border-amber-400/50 transition-colors">
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <span className="text-[10px] font-mono font-bold text-amber-300 uppercase">Passenger Terminal</span>
+                <h3 className="text-lg font-extrabold text-white flex items-center gap-2">
+                  <Smartphone className="w-5 h-5 text-amber-400" />
+                  <span>RideZW Rider App</span>
+                </h3>
+                <p className="text-xs text-sky-200">For daily commuters, tourists, and business travelers across Zimbabwe.</p>
+              </div>
+              <span className="px-2.5 py-1 rounded bg-amber-400/20 text-amber-300 border border-amber-400/30 text-[11px] font-mono font-bold shrink-0">
+                PWA & APK
+              </span>
+            </div>
+
+            {/* Feature Checklist */}
+            <div className="space-y-2.5 text-xs text-slate-200">
+              <div className="flex items-start gap-2.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                <div>
+                  <strong className="text-white">Instant Driver Counter-Bid Alerts:</strong> Push notifications ping your phone the millisecond a nearby driver accepts your price or proposes a counter-offer.
+                </div>
+              </div>
+              <div className="flex items-start gap-2.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                <div>
+                  <strong className="text-white">Live Arrival Notifications:</strong> Audible notification when your driver is 2 minutes away and when they pull up at your pickup spot.
+                </div>
+              </div>
+              <div className="flex items-start gap-2.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                <div>
+                  <strong className="text-white">EcoCash & ZIPIT Wallet:</strong> 1-click in-app mobile money settlement with automatic change-free digital receipt generation.
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-sky-800/60 flex items-center justify-between gap-2">
+              <button
+                onClick={() => openDownloadModal('rider')}
+                className="px-4 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs transition-all flex items-center gap-2"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Get Rider App on Phone</span>
+              </button>
+              <span className="text-[10px] font-mono text-sky-300">Android • iOS • HarmonyOS</span>
+            </div>
+          </div>
+
+          {/* Column 2: Driver Partner Mobile Terminal */}
+          <div className="bg-sky-900/40 border border-sky-800/80 rounded-2xl p-5 sm:p-6 space-y-4 hover:border-amber-400/50 transition-colors">
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <span className="text-[10px] font-mono font-bold text-amber-300 uppercase">Driver Terminal</span>
+                <h3 className="text-lg font-extrabold text-white flex items-center gap-2">
+                  <Car className="w-5 h-5 text-amber-400" />
+                  <span>RideZW Driver Partner App</span>
+                </h3>
+                <p className="text-xs text-sky-200">For vehicle owners, taxi operators, and transport fleets nationwide.</p>
+              </div>
+              <span className="px-2.5 py-1 rounded bg-emerald-400/20 text-emerald-300 border border-emerald-400/30 text-[11px] font-mono font-bold shrink-0">
+                88% Payout
+              </span>
+            </div>
+
+            {/* Feature Checklist */}
+            <div className="space-y-2.5 text-xs text-slate-200">
+              <div className="flex items-start gap-2.5">
+                <CheckCircle2 className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <strong className="text-white">Loud Background Audio Chimes:</strong> Distinct audio chirps play automatically when new passenger ride requests match your location—even with screen off.
+                </div>
+              </div>
+              <div className="flex items-start gap-2.5">
+                <CheckCircle2 className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <strong className="text-white">Google Maps & Waze Background Sync:</strong> Switch to external GPS navigation while RideZW tracks your trip and transmits safety telematics in background.
+                </div>
+              </div>
+              <div className="flex items-start gap-2.5">
+                <CheckCircle2 className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <strong className="text-white">Instant EcoCash Cashout:</strong> Withdraw daily trip earnings directly to your mobile wallet without waiting for weekly settlement cycles.
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-sky-800/60 flex items-center justify-between gap-2">
+              <button
+                onClick={() => openDownloadModal('driver')}
+                className="px-4 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs transition-all flex items-center gap-2"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Get Driver App on Phone</span>
+              </button>
+              <button
+                onClick={() => playNotificationSound()}
+                className="px-3 py-2 rounded-xl bg-sky-950/80 hover:bg-sky-900 border border-sky-700 text-sky-200 hover:text-white text-[11px] font-bold transition-all flex items-center gap-1.5"
+                title="Test Driver Alert Sound"
+              >
+                <Volume2 className="w-3 h-3 text-amber-400" />
+                <span>Test Alert</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Technical Capabilities & How Background Works Banner */}
+        <div className="bg-sky-900/60 border border-sky-700/60 rounded-2xl p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+          <div className="space-y-1">
+            <span className="font-bold text-amber-300 text-[11px] block">⚡ Ultra-Lightweight (2MB)</span>
+            <p className="text-slate-300 text-[11px] leading-relaxed">
+              Consumes almost zero device storage. Installs instantly without draining expensive mobile data bundles on Econet or NetOne.
+            </p>
+          </div>
+          <div className="space-y-1">
+            <span className="font-bold text-sky-300 text-[11px] block">🔔 Web Push & Background Sync</span>
+            <p className="text-slate-300 text-[11px] leading-relaxed">
+              Powered by native Service Workers. Keeps socket connection and Web Push listeners active while running in the background.
+            </p>
+          </div>
+          <div className="space-y-1">
+            <span className="font-bold text-emerald-300 text-[11px] block">🛡️ ZRP & Emergency Linked</span>
+            <p className="text-slate-300 text-[11px] leading-relaxed">
+              1-tap panic SOS dispatches live satellite coordinates directly to Zimbabwe Republic Police and local emergency response teams.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* ========================================================================= */}
+      {/* 5. DRIVER PARTNER PROGRAM */}
       {/* ========================================================================= */}
       <section className="bg-gradient-to-r from-amber-400 via-amber-500 to-amber-400 rounded-3xl p-6 sm:p-8 text-slate-950 shadow-md">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
@@ -539,12 +752,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       </section>
 
       {/* ========================================================================= */}
-      {/* 5. FREQUENTLY ASKED QUESTIONS */}
+      {/* 6. FREQUENTLY ASKED QUESTIONS */}
       {/* ========================================================================= */}
       <section className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 space-y-6">
         <div className="text-center max-w-xl mx-auto space-y-1">
           <h3 className="text-xl font-bold text-slate-900">Frequently Asked Questions</h3>
-          <p className="text-xs text-slate-500">Everything you need to know about riding and driving with RideZW</p>
+          <p className="text-xs text-slate-500">Everything you need to know about riding, driving, and mobile installation with RideZW</p>
         </div>
 
         <div className="max-w-2xl mx-auto space-y-3">
@@ -574,6 +787,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           ))}
         </div>
       </section>
+
+      {/* Download App Modal */}
+      <DownloadAppModal
+        isOpen={isDownloadModalOpen}
+        onClose={() => setIsDownloadModalOpen(false)}
+        defaultRole={downloadModalRole}
+      />
     </div>
   );
 };

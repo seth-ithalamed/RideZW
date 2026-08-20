@@ -12,6 +12,7 @@ import { RiderApp } from './components/rider/RiderApp';
 import { DriverApp } from './components/driver/DriverApp';
 import { AdminDashboard } from './components/admin/AdminDashboard';
 import { AuthModal } from './components/auth/AuthModal';
+import { DownloadAppModal } from './components/common/DownloadAppModal';
 import { Currency, Language, NavigationTab } from './types';
 
 export default function App() {
@@ -19,6 +20,7 @@ export default function App() {
   const [currency, setCurrency] = useState<Currency>(state.settings.defaultCurrency);
   const [language, setLanguage] = useState<Language>(state.settings.defaultLanguage);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
   const [authRole, setAuthRole] = useState<'rider' | 'driver' | 'admin'>('rider');
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
 
@@ -60,6 +62,7 @@ export default function App() {
         sosCount={activeSosCount}
         onLogout={handleLogout}
         onOpenAuth={handleOpenAuth}
+        onOpenDownloadModal={() => setShowDownloadModal(true)}
       />
 
       {/* Main Content Area */}
@@ -130,6 +133,13 @@ export default function App() {
         onClose={() => setShowAuthModal(false)}
         initialMode={authMode}
         initialRole={authRole}
+      />
+
+      {/* Global Mobile App & Background Push Notifications Modal */}
+      <DownloadAppModal
+        isOpen={showDownloadModal}
+        onClose={() => setShowDownloadModal(false)}
+        defaultRole="rider"
       />
 
       {/* Single-Instance Session Invalidation Notice */}

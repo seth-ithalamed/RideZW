@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Car,
   DollarSign,
@@ -25,12 +25,17 @@ import {
   Phone,
   UserCheck,
   Activity,
-  LogOut
+  LogOut,
+  Bell,
+  Smartphone,
+  Download
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import confetti from 'canvas-confetti';
 import { store } from '../../services/store';
 import { MapVisualizer } from '../common/MapVisualizer';
+import { DownloadAppModal } from '../common/DownloadAppModal';
+import { triggerLocalNotification } from '../../services/notificationService';
 import {
   Currency,
   Language,
@@ -79,6 +84,24 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
 
   // Cash Collection Modal
   const [showCashCollectModal, setShowCashCollectModal] = useState(false);
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
+
+  // Background Alert on incoming trips
+  const prevTripIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      activeTrip &&
+      activeTrip.status === 'negotiating' &&
+      activeDriver.isOnline &&
+      prevTripIdRef.current !== activeTrip.id
+    ) {
+      prevTripIdRef.current = activeTrip.id;
+      triggerLocalNotification(
+        '🚗 New Ride Offer Broadcast!',
+        `${activeTrip.riderName} is offering $${Math.ceil(activeTrip.proposedFareUSD)} from ${activeTrip.pickup.neighborhood || activeTrip.pickup.city} to ${activeTrip.destination.neighborhood || activeTrip.destination.city}`
+      );
+    }
+  }, [activeTrip?.id, activeTrip?.status, activeDriver?.isOnline]);
 
   // Format money helper (fees rounded up)
   const formatMoney = (amountUSD: number) => {
@@ -204,8 +227,17 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
             </div>
           </div>
 
-          {/* Logout */}
+          {/* Actions: Install App & Logout */}
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowDownloadModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-bold transition-all shadow-2xs cursor-pointer"
+              title="Install Mobile App & Setup Push Notifications"
+            >
+              <Smartphone className="w-3.5 h-3.5 text-amber-700" />
+              <span className="hidden sm:inline">Install App & Alerts</span>
+            </button>
+
             <button
               onClick={() => store.logout()}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold transition-all shadow-2xs cursor-pointer"
@@ -1171,6 +1203,13 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
           </div>
         </div>
       )}
+
+      {/* Mobile App & Background Push Notifications Modal */}
+      <DownloadAppModal
+        isOpen={showDownloadModal}
+        onClose={() => setShowDownloadModal(false)}
+        defaultRole="driver"
+      />
     </div>
   );
 };

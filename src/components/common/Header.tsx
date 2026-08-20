@@ -23,6 +23,7 @@ interface HeaderProps {
   sosCount: number;
   onLogout?: () => void;
   onOpenAuth: (mode: 'signin' | 'signup', role: 'rider' | 'driver' | 'admin') => void;
+  onOpenDownloadModal?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -34,7 +35,8 @@ export const Header: React.FC<HeaderProps> = ({
   setLanguage,
   sosCount,
   onLogout,
-  onOpenAuth
+  onOpenAuth,
+  onOpenDownloadModal
 }) => {
   const state = store.getState();
   const authUser = state.authenticatedUser;
@@ -192,6 +194,17 @@ export const Header: React.FC<HeaderProps> = ({
             {/* Navigation Actions based on Authentication */}
             {isHome ? (
               <div className="flex items-center gap-2">
+                {onOpenDownloadModal && (
+                  <button
+                    onClick={onOpenDownloadModal}
+                    className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 font-bold text-xs transition-colors cursor-pointer"
+                    title="Install Mobile App on Android / iOS"
+                  >
+                    <Smartphone className="w-3.5 h-3.5 text-amber-700" />
+                    <span>Get App</span>
+                  </button>
+                )}
+
                 <button
                   onClick={() => onOpenAuth('signin', 'rider')}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs transition-colors"

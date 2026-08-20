@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Car,
   MapPin,
@@ -29,12 +29,16 @@ import {
   Crosshair,
   Loader2,
   Navigation,
-  Compass
+  Compass,
+  Bell,
+  Download
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { store } from '../../services/store';
 import { MapVisualizer } from '../common/MapVisualizer';
 import { MapboxLocationSearchInput } from '../common/MapboxLocationSearchInput';
+import { DownloadAppModal } from '../common/DownloadAppModal';
+import { triggerLocalNotification } from '../../services/notificationService';
 import {
   searchMapboxPlaces,
   MapboxPlace,
@@ -96,6 +100,40 @@ export const RiderApp: React.FC<RiderAppProps> = ({ currency, language }) => {
   const [sosModalOpen, setSosModalOpen] = useState(false);
   const [sosSubmitted, setSosSubmitted] = useState(false);
   const [shareToast, setShareToast] = useState(false);
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
+
+  // Background Push & Sound notification on incoming driver bids or arrival
+  const prevOffersCountRef = useRef<number>(0);
+  const prevStatusRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (activeTrip) {
+      // Driver Counter-offer received
+      const currentOffers = activeTrip.offers?.length || 0;
+      if (currentOffers > prevOffersCountRef.current) {
+        const latestOffer = activeTrip.offers[activeTrip.offers.length - 1];
+        triggerLocalNotification(
+          '🚘 New Driver Offer Received!',
+          `${latestOffer.driverName} offered $${latestOffer.offeredAmount.toFixed(2)} (${latestOffer.etaMinutes} mins away)`
+        );
+      }
+      prevOffersCountRef.current = currentOffers;
+
+      // Status change to arrived
+      if (activeTrip.status === 'arrived' && prevStatusRef.current !== 'arrived') {
+        triggerLocalNotification(
+          'Driver Has Arrived! 📍',
+          `${activeTrip.driverName || 'Your driver'} is waiting at your pickup location.`
+        );
+      } else if (activeTrip.status === 'driver_arriving' && prevStatusRef.current !== 'driver_arriving') {
+        triggerLocalNotification(
+          'Ride Confirmed & Driver En Route 🚗',
+          `${activeTrip.driverName || 'Your driver'} is on the way.`
+        );
+      }
+      prevStatusRef.current = activeTrip.status;
+    }
+  }, [activeTrip?.offers?.length, activeTrip?.status]);
 
   // Auto-detect GPS on component mount
   useEffect(() => {
@@ -270,37 +308,46 @@ export const RiderApp: React.FC<RiderAppProps> = ({ currency, language }) => {
           </div>
         </div>
 
-        {/* Right: City Selector & Logout */}
-        <div className="flex items-center gap-2">
-          {/* City Selector */}
-          <div className="flex items-center gap-1.5 bg-slate-50 px-2 py-1 rounded-lg border border-slate-200 text-xs font-semibold">
-            <MapPin className="w-3.5 h-3.5 text-sky-800 shrink-0" />
-            <select
-              value={city}
-              onChange={(e) => handleCityChange(e.target.value)}
-              className="bg-transparent text-slate-800 font-bold text-xs focus:outline-none cursor-pointer pr-1"
+          {/* Right: Install App, City Selector & Logout */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowDownloadModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-bold transition-all shadow-2xs cursor-pointer"
+              title="Install Mobile App & Enable Push Notifications"
             >
-              {coverageCities.map((c) => (
-                <option key={c.id} value={c.name} disabled={c.status === 'inactive'}>
-                  {c.name} ({c.code || c.name.slice(0, 3).toUpperCase()}) {c.status === 'coming_soon' ? '• Pipeline' : ''}
-                </option>
-              ))}
-            </select>
-            <span className="text-[9px] font-mono font-bold px-1 py-0.2 rounded bg-emerald-100 text-emerald-800">
-              LIVE
-            </span>
-          </div>
+              <Smartphone className="w-3.5 h-3.5 text-amber-700" />
+              <span className="hidden sm:inline">Install Mobile App</span>
+            </button>
 
-          {/* Logout Button */}
-          <button
-            onClick={() => store.logout()}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold transition-all shadow-2xs cursor-pointer"
-            title="Log out of Rider Account"
-          >
-            <LogOut className="w-3.5 h-3.5 text-rose-600" />
-            <span className="hidden sm:inline">Log Out</span>
-          </button>
-        </div>
+            {/* City Selector */}
+            <div className="flex items-center gap-1.5 bg-slate-50 px-2 py-1 rounded-lg border border-slate-200 text-xs font-semibold">
+              <MapPin className="w-3.5 h-3.5 text-sky-800 shrink-0" />
+              <select
+                value={city}
+                onChange={(e) => handleCityChange(e.target.value)}
+                className="bg-transparent text-slate-800 font-bold text-xs focus:outline-none cursor-pointer pr-1"
+              >
+                {coverageCities.map((c) => (
+                  <option key={c.id} value={c.name} disabled={c.status === 'inactive'}>
+                    {c.name} ({c.code || c.name.slice(0, 3).toUpperCase()}) {c.status === 'coming_soon' ? '• Pipeline' : ''}
+                  </option>
+                ))}
+              </select>
+              <span className="text-[9px] font-mono font-bold px-1 py-0.2 rounded bg-emerald-100 text-emerald-800">
+                LIVE
+              </span>
+            </div>
+
+            {/* Logout Button */}
+            <button
+              onClick={() => store.logout()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold transition-all shadow-2xs cursor-pointer"
+              title="Log out of Rider Account"
+            >
+              <LogOut className="w-3.5 h-3.5 text-rose-600" />
+              <span className="hidden sm:inline">Log Out</span>
+            </button>
+          </div>
       </div>
 
       {/* Map Stage */}
@@ -969,6 +1016,13 @@ export const RiderApp: React.FC<RiderAppProps> = ({ currency, language }) => {
           </div>
         </div>
       )}
+
+      {/* Download Mobile App & Push Notifications Modal */}
+      <DownloadAppModal
+        isOpen={showDownloadModal}
+        onClose={() => setShowDownloadModal(false)}
+        defaultRole="rider"
+      />
     </div>
   );
 };
