@@ -214,22 +214,31 @@ export const DownloadAppModal: React.FC<DownloadAppModalProps> = ({
                   </div>
                 </div>
 
-                <div className="pt-1">
+                <div className="pt-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <button
                     onClick={handleInstantInstall}
-                    className="w-full px-5 py-3.5 rounded-xl bg-slate-950 hover:bg-slate-900 text-amber-400 font-black text-sm shadow-md flex items-center justify-center gap-2.5 transition-all cursor-pointer hover:scale-[1.01]"
+                    className="px-4 py-3 rounded-xl bg-slate-950 hover:bg-slate-900 text-amber-400 font-black text-xs shadow-md flex items-center justify-center gap-2 transition-all cursor-pointer hover:scale-[1.01]"
                   >
-                    <Download className="w-4 h-4 text-amber-400" />
-                    <span>Install App on Device (1-Tap Setup)</span>
-                    <ArrowRight className="w-4 h-4 text-amber-400" />
+                    <Smartphone className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span>1-Tap Install (Web App)</span>
+                    <ArrowRight className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                   </button>
+
+                  <a
+                    href={`/api/download/apk?role=${activeTab}`}
+                    download={activeTab === 'driver' ? 'RideZW_Driver_v2.4.0.apk' : 'RideZW_Rider_v2.4.0.apk'}
+                    className="px-4 py-3 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs shadow-md flex items-center justify-center gap-2 transition-all cursor-pointer hover:scale-[1.01]"
+                  >
+                    <Download className="w-4 h-4 text-slate-950 shrink-0" />
+                    <span>Download Android APK</span>
+                  </a>
                 </div>
 
                 {isInIframe && (
-                  <div className="bg-sky-50 border border-sky-200 rounded-xl p-2.5 flex items-center gap-2 text-[11px] text-sky-900">
-                    <Info className="w-4 h-4 text-sky-700 shrink-0" />
+                  <div className="bg-sky-50 border border-sky-200 rounded-xl p-2.5 flex items-start gap-2 text-[11px] text-sky-900">
+                    <Info className="w-4 h-4 text-sky-700 shrink-0 mt-0.5" />
                     <span>
-                      In Preview Mode: Clicking the button above opens the standalone web app in a dedicated tab where your browser will trigger <strong>"Install App / Add to Home Screen"</strong> with one tap.
+                      <strong>Why 1-Tap Opens in New Tab:</strong> Browser security restrictions in iframes (preview sandboxes) block automatic home-screen installation dialogs. Clicking <strong>1-Tap Install</strong> opens the app in a standalone tab where your browser (Chrome / Safari / Edge) can immediately trigger <em>"Add to Home Screen / Install"</em>.
                     </span>
                   </div>
                 )}

@@ -299,6 +299,66 @@ app.post('/api/riders', async (req, res) => {
   return res.json({ success: true, riderId: rider.id, persisted: true });
 });
 
+// 5b. Get All Riders Endpoint
+app.get('/api/riders', async (req, res) => {
+  const sb = getServerSupabase();
+  if (sb) {
+    try {
+      const { data, error } = await sb.from('riders').select('*').order('created_at', { ascending: false });
+      if (!error && data && data.length > 0) {
+        return res.json({ success: true, source: 'supabase_db', riders: data });
+      }
+    } catch (e: any) {
+      console.warn('Error reading riders from Supabase:', e.message);
+    }
+  }
+  return res.json({ success: true, source: 'server_memory_db', riders: Array.from(serverDb.riders.values()) });
+});
+
+// 5c. Get All Drivers Endpoint
+app.get('/api/drivers', async (req, res) => {
+  const sb = getServerSupabase();
+  if (sb) {
+    try {
+      const { data, error } = await sb.from('drivers').select('*');
+      if (!error && data && data.length > 0) {
+        return res.json({ success: true, source: 'supabase_db', drivers: data });
+      }
+    } catch (e: any) {
+      console.warn('Error reading drivers from Supabase:', e.message);
+    }
+  }
+  return res.json({ success: true, source: 'server_memory_db', drivers: Array.from(serverDb.drivers.values()) });
+});
+
+// 5d. Pricing Matrices API
+app.post('/api/pricing', async (req, res) => {
+  const { pricingConfigs } = req.body;
+  if (pricingConfigs && Array.isArray(pricingConfigs)) {
+    pricingConfigs.forEach((pc: any) => {
+      serverDb.pricingConfigs.set(pc.category, pc);
+    });
+  }
+  return res.json({ success: true, message: 'Pricing configurations updated' });
+});
+
+app.get('/api/pricing', (req, res) => {
+  return res.json({ success: true, pricingConfigs: Array.from(serverDb.pricingConfigs.values()) });
+});
+
+// 5e. Platform Settings API
+app.post('/api/settings', async (req, res) => {
+  const { settings } = req.body;
+  if (settings) {
+    serverDb.platformSettings = { ...serverDb.platformSettings, ...settings };
+  }
+  return res.json({ success: true, message: 'Platform settings updated' });
+});
+
+app.get('/api/settings', (req, res) => {
+  return res.json({ success: true, settings: serverDb.platformSettings });
+});
+
 // 6. SOS Alert Endpoint
 app.post('/api/sos', async (req, res) => {
   const sos = req.body;

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Users,
   UserPlus,
@@ -34,15 +34,48 @@ import {
 } from 'lucide-react';
 import { store } from '../../services/store';
 import { RiderProfile, RiderAccountStatus, RiderAccountType, Currency } from '../../types';
+import { dialog } from '../../services/dialogService';
 
 interface UserManagementTabProps {
   currency: Currency;
 }
 
 export const UserManagementTab: React.FC<UserManagementTabProps> = ({ currency }) => {
-  const state = store.getState();
+  const [state, setState] = useState(() => store.getState());
   const riders = state.riders || [state.rider];
   const allTrips = state.tripHistory;
+
+  useEffect(() => {
+    const unsub = store.subscribe((newState) => {
+      setState(newState);
+    });
+
+    // Sync from database / backend
+    fetch('/api/riders')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success && data.riders && data.riders.length > 0) {
+          const currentIds = new Set((store.getState().riders || []).map((r) => r.id));
+          const newFromDb = data.riders.filter((r: any) => !currentIds.has(r.id));
+          if (newFromDb.length > 0) {
+            newFromDb.forEach((r: any) => {
+              store.addRider({
+                name: r.name,
+                phone: r.phone,
+                email: r.email,
+                city: r.city || 'Harare',
+                accountType: r.account_type || 'standard',
+                emergencyContactName: 'Emergency Hotline',
+                emergencyContactPhone: '+263 77 000 9999'
+              });
+            });
+          }
+        }
+      })
+      .catch(() => {});
+
+    return () => unsub();
+  }, []);
 
   // Search and Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -124,12 +157,16 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({ currency }
   const totalWalletSumUSD = riders.reduce((acc, r) => acc + (r.walletBalance || 0), 0);
 
   // Handlers
-  const handleToggleStatus = (riderId: string, currentStatus: RiderAccountStatus) => {
+  const handleToggleStatus = async (riderId: string, currentStatus: RiderAccountStatus) => {
     const nextStatus: RiderAccountStatus =
       currentStatus === 'active' ? 'suspended' : currentStatus === 'suspended' ? 'active' : 'active';
-    const reason = prompt(`Enter reason for changing status to ${nextStatus.toUpperCase()}:`);
-    if (reason !== null) {
-      store.updateRiderStatus(riderId, nextStatus, reason || 'Operator Manual Update');
+    const reason = await dialog.prompt(
+      `Account Status Change`,
+      `Enter administrative reason for setting user status to ${nextStatus.toUpperCase()}:`,
+      'Administrative Compliance Update'
+    );
+    if (reason !== null && reason.trim()) {
+      store.updateRiderStatus(riderId, nextStatus, reason.trim());
       setActionSuccessMsg(`Updated user account status to ${nextStatus.toUpperCase()}`);
       setTimeout(() => setActionSuccessMsg(null), 3500);
     }
@@ -156,7 +193,7 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({ currency }
   const handleCreateUser = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUserForm.name.trim() || !newUserForm.phone.trim()) {
-      alert('Please fill in user full name and phone number.');
+      dialog.alert('Validation Error', 'Please fill in user full name and phone number.', 'warning');
       return;
     }
 
@@ -234,8 +271,15 @@ export const UserManagementTab: React.FC<UserManagementTabProps> = ({ currency }
     setTimeout(() => setActionSuccessMsg(null), 3500);
   };
 
-  const handleDeleteUser = (rider: RiderProfile) => {
-    if (confirm(`Are you sure you want to permanently delete user account "${rider.name}" (${rider.phone})?`)) {
+  const handleDeleteUser = async (rider: RiderProfile) => {
+    const confirmed = await dialog.confirm(
+      'Delete User Account',
+      `Are you sure you want to permanently delete user account "${rider.name}" (${rider.phone})? This cannot be undone.`,
+      'error',
+      'Delete Account',
+      'Cancel'
+    );
+    if (confirmed) {
       store.deleteRider(rider.id);
       if (selectedRider?.id === rider.id) {
         setSelectedRider(null);

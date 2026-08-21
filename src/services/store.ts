@@ -1,5 +1,6 @@
 import {
   DriverProfile,
+  Vehicle,
   RiderProfile,
   RiderAccountStatus,
   RiderAccountType,
@@ -649,21 +650,38 @@ class Store {
   }
 
   public loginAsDriver(phoneOrPlate: string): DriverProfile {
-    let driver = this.state.drivers.find(
-      (d) => d.phone === phoneOrPlate || d.vehicle.plateNumber.toLowerCase() === phoneOrPlate.toLowerCase()
-    );
+    const cleanInput = phoneOrPlate.trim().toLowerCase();
+    let driver = this.state.drivers.find((d) => {
+      const pClean = (d.phone || '').toLowerCase().replace(/\s+/g, '');
+      const plateClean = (d.vehicle?.plateNumber || '').toLowerCase().replace(/[\s-]+/g, '');
+      const searchClean = cleanInput.replace(/[\s-]+/g, '');
+      const searchDirect = cleanInput.replace(/\s+/g, '');
+      return (
+        d.phone.toLowerCase() === cleanInput ||
+        pClean === searchDirect ||
+        d.vehicle.plateNumber.toLowerCase() === cleanInput ||
+        plateClean === searchClean ||
+        d.name.toLowerCase() === cleanInput
+      );
+    });
+
     if (!driver) {
-      const cleanInput = phoneOrPlate.trim();
       const isPlate = /^[A-Z]{3}-?[0-9]{3,4}$/i.test(cleanInput);
       const newDriverId = `drv-${Date.now().toString().slice(-6)}`;
+      const derivedName = isPlate
+        ? `Driver (${cleanInput.toUpperCase()})`
+        : cleanInput.startsWith('+') || /^\d+$/.test(cleanInput)
+        ? `Driver (${phoneOrPlate.trim()})`
+        : phoneOrPlate.trim();
+
       driver = {
         id: newDriverId,
-        name: 'Driver Partner',
-        phone: isPlate ? '+263 77 123 4567' : cleanInput || '+263 77 123 4567',
+        name: derivedName,
+        phone: isPlate ? '+263 77 123 4567' : phoneOrPlate.trim(),
         nationalId: `63-${Math.floor(Math.random() * 899999 + 100000)}-Z-42`,
         email: 'driver@ridezw.co.zw',
         avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
-        kycStatus: 'approved',
+        kycStatus: 'pending',
         vehicle: {
           id: `veh-${Date.now().toString().slice(-6)}`,
           driverId: newDriverId,
@@ -671,13 +689,13 @@ class Store {
           model: 'Passo',
           year: 2020,
           color: 'Silver',
-          plateNumber: isPlate ? cleanInput.toUpperCase() : `AFE-${Math.floor(Math.random() * 8999 + 1000)}`,
+          plateNumber: isPlate ? phoneOrPlate.trim().toUpperCase() : `AFE-${Math.floor(Math.random() * 8999 + 1000)}`,
           category: 'economy',
           capacity: 4
         },
         rating: 5.0,
         totalTrips: 0,
-        isOnline: true,
+        isOnline: false,
         currentLat: -17.8292,
         currentLng: 31.0522,
         city: 'Harare',
@@ -686,6 +704,7 @@ class Store {
         cashDebtCeiling: 15.00,
         isBlockedDueToDebt: false,
         documents: [],
+        governmentPermitStatus: 'not_found',
         registeredAt: new Date().toISOString()
       };
       this.state.drivers.unshift(driver);
@@ -1199,8 +1218,15 @@ class Store {
   }) {
     const driver = this.state.drivers.find((d) => d.id === params.driverId);
     if (!driver) throw new Error('Driver not found');
-    if (driver.walletBalance < params.amountUSD) {
-      throw new Error('Insufficient wallet balance for withdrawal');
+
+    if (params.amountUSD <= 0) {
+      throw new Error('Please enter a valid positive withdrawal amount.');
+    }
+    if (driver.walletBalance <= 0) {
+      throw new Error(`Cannot withdraw: Your current wallet balance is $${driver.walletBalance.toFixed(2)}. Minimum positive balance required.`);
+    }
+    if (params.amountUSD > driver.walletBalance) {
+      throw new Error(`Insufficient wallet balance: Requested $${params.amountUSD.toFixed(2)}, but available balance is only $${driver.walletBalance.toFixed(2)}.`);
     }
 
     const autoApprove = params.amountUSD <= this.state.settings.autoApprovePayoutUnderUSD;
@@ -1286,6 +1312,34 @@ class Store {
     this.saveState();
   }
 
+  public updateDriverProfile(driverId: string, updates: Omit<Partial<DriverProfile>, 'vehicle'> & { vehicle?: Partial<Vehicle> }) {
+    const driver = this.state.drivers.find((d) => d.id === driverId);
+    if (driver) {
+      if (updates.vehicle) {
+        driver.vehicle = {
+          ...driver.vehicle,
+          ...updates.vehicle
+        };
+        delete updates.vehicle;
+      }
+      Object.assign(driver, updates);
+      persistDriverToBackend(driver).catch(() => {});
+      if (isSupabaseConfigured()) {
+        syncDriverToSupabase(driver).catch(() => {});
+      }
+      this.saveState();
+    }
+  }
+
+  public updateDriverGpsLocation(driverId: string, lat: number, lng: number) {
+    const driver = this.state.drivers.find((d) => d.id === driverId);
+    if (driver) {
+      driver.currentLat = lat;
+      driver.currentLng = lng;
+      this.saveState();
+    }
+  }
+
   public registerDriver(params: {
     name: string;
     phone: string;
@@ -1320,12 +1374,10 @@ class Store {
       cashDebtCeiling: 15.0,
       isBlockedDueToDebt: false,
       subscriptionTier: 'commission',
-      kycStatus: 'approved',
+      kycStatus: 'pending', // Driver must submit KYC verification
       city: params.city || 'Harare',
       documents: [],
-      governmentPermitNumber: `ZW-MOT-2026-${Math.floor(Math.random() * 8999 + 1000)}`,
-      governmentPermitStatus: 'valid',
-      governmentPermitExpiry: '2027-08-16',
+      governmentPermitStatus: 'not_found', // Cannot have valid permit upon creation
       registeredAt: new Date().toISOString(),
       vehicle: {
         ...params.vehicle,
@@ -1344,7 +1396,7 @@ class Store {
         );
         return matchedCity?.centerLng || 31.0335;
       })(),
-      isOnline: true
+      isOnline: false
     };
 
     this.state.drivers.unshift(newDriver);
@@ -1890,6 +1942,20 @@ class Store {
 
   public updatePricingConfig(configs: PricingConfig[]) {
     this.state.pricingConfigs = configs;
+    fetch('/api/pricing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pricingConfigs: configs })
+    }).catch(() => {});
+    if (isSupabaseConfigured()) {
+      syncSeedDataToSupabase({
+        coverageCities: this.state.coverageCities,
+        pricingConfigs: configs,
+        permitTypes: this.state.permitTypes,
+        settings: this.state.settings,
+        adminUsers: this.state.adminUsers
+      }).catch(() => {});
+    }
     this.saveState();
   }
 
@@ -1897,6 +1963,11 @@ class Store {
     const config = this.state.pricingConfigs.find((c) => c.category === category);
     if (config) {
       Object.assign(config, updates);
+      fetch('/api/pricing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pricingConfigs: this.state.pricingConfigs })
+      }).catch(() => {});
       this.saveState();
     }
   }
@@ -1906,11 +1977,30 @@ class Store {
       c.commissionPercentage = percentage;
       c.cashLevyPercentage = percentage;
     });
+    fetch('/api/pricing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pricingConfigs: this.state.pricingConfigs })
+    }).catch(() => {});
     this.saveState();
   }
 
   public updatePlatformSettings(settings: Partial<PlatformSettings>) {
     this.state.settings = { ...this.state.settings, ...settings };
+    fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: this.state.settings })
+    }).catch(() => {});
+    if (isSupabaseConfigured()) {
+      syncSeedDataToSupabase({
+        coverageCities: this.state.coverageCities,
+        pricingConfigs: this.state.pricingConfigs,
+        permitTypes: this.state.permitTypes,
+        settings: this.state.settings,
+        adminUsers: this.state.adminUsers
+      }).catch(() => {});
+    }
     this.saveState();
   }
 

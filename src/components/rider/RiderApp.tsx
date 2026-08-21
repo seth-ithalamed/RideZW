@@ -356,14 +356,17 @@ export const RiderApp: React.FC<RiderAppProps> = ({ currency, language }) => {
           pickup={activeTrip ? activeTrip.pickup : pickup}
           destination={activeTrip ? activeTrip.destination : destination}
           driverLocation={
-            activeTrip && activeTrip.driverVehicle
-              ? {
-                  lat: pickup.lat + 0.005,
-                  lng: pickup.lng - 0.004,
-                  name: activeTrip.driverName || 'Driver',
-                  plate: activeTrip.driverVehicle.plateNumber,
-                  category: activeTrip.category
-                }
+            activeTrip && activeTrip.driverId
+              ? (() => {
+                  const assignedDriver = state.drivers.find((d) => d.id === activeTrip.driverId);
+                  return {
+                    lat: assignedDriver?.currentLat ?? (pickup.lat + 0.005),
+                    lng: assignedDriver?.currentLng ?? (pickup.lng - 0.004),
+                    name: activeTrip.driverName || 'Driver',
+                    plate: activeTrip.driverVehicle?.plateNumber || assignedDriver?.vehicle.plateNumber || '',
+                    category: activeTrip.category
+                  };
+                })()
               : null
           }
           nearbyDrivers={nearbyDrivers}
@@ -813,6 +816,62 @@ export const RiderApp: React.FC<RiderAppProps> = ({ currency, language }) => {
               </a>
             </div>
           </div>
+
+          {/* Real-time Driver GPS Telemetry & Arrival ETA Card */}
+          {(() => {
+            const driver = state.drivers.find((d) => d.id === activeTrip.driverId);
+            const driverLat = driver?.currentLat ?? (activeTrip.pickup.lat + 0.005);
+            const driverLng = driver?.currentLng ?? (activeTrip.pickup.lng + 0.005);
+            const targetLat = activeTrip.status === 'in_progress' ? activeTrip.destination.lat : activeTrip.pickup.lat;
+            const targetLng = activeTrip.status === 'in_progress' ? activeTrip.destination.lng : activeTrip.pickup.lng;
+
+            const distKm = Math.sqrt(
+              Math.pow((driverLat - targetLat) * 111, 2) +
+              Math.pow((driverLng - targetLng) * 111 * Math.cos((targetLat * Math.PI) / 180), 2)
+            ).toFixed(1);
+            const etaMins = Math.max(1, Math.round(Number(distKm) * 2.5));
+
+            return (
+              <div className="p-3 bg-gradient-to-r from-slate-900 via-sky-950 to-slate-900 text-white rounded-lg space-y-2.5 shadow-sm border border-slate-800">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+                    <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">
+                      Live Vehicle Location & ETA Tracking
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono bg-sky-900/80 text-sky-200 border border-sky-700 px-2 py-0.5 rounded">
+                    GPS: {driverLat.toFixed(4)}, {driverLng.toFixed(4)}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5 pt-1">
+                  <div className="bg-slate-800/80 border border-slate-700/80 p-2.5 rounded">
+                    <span className="text-[10px] text-slate-400 uppercase font-bold block">
+                      {activeTrip.status === 'in_progress' ? 'Remaining Distance' : 'Distance from Pickup'}
+                    </span>
+                    <p className="text-lg font-mono font-extrabold text-white mt-0.5">
+                      {distKm} <span className="text-xs text-slate-400 font-sans font-normal">km</span>
+                    </p>
+                  </div>
+
+                  <div className="bg-slate-800/80 border border-slate-700/80 p-2.5 rounded">
+                    <span className="text-[10px] text-slate-400 uppercase font-bold block">
+                      {activeTrip.status === 'in_progress' ? 'Dropoff ETA' : 'Driver Arrival Time'}
+                    </span>
+                    <p className="text-lg font-mono font-extrabold text-amber-400 mt-0.5">
+                      ~{etaMins} <span className="text-xs text-slate-400 font-sans font-normal">mins away</span>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between text-[11px] text-slate-300 pt-0.5 border-t border-slate-800">
+                  <span>Vehicle: <strong className="text-white">{activeTrip.driverVehicle?.make} {activeTrip.driverVehicle?.model} ({activeTrip.driverVehicle?.color || 'White'})</strong></span>
+                  <span className="font-mono text-amber-300 font-bold">{activeTrip.driverVehicle?.plateNumber}</span>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Verification Code Box (Boarding Security) */}
           <div className="p-3 bg-sky-50/70 border border-sky-200 rounded flex items-center justify-between text-xs">

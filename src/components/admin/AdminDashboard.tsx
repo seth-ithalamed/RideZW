@@ -39,6 +39,7 @@ import { UserManagementTab } from './UserManagementTab';
 import { StaffManagementTab } from './StaffManagementTab';
 import { CoverageCitiesTab } from './CoverageCitiesTab';
 import { GenesisAdminSetupModal } from './GenesisAdminSetupModal';
+import { dialog } from '../../services/dialogService';
 import {
   Currency,
   Language,
@@ -109,10 +110,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currency }) => {
     store.updateDriverKycStatus(driverId, 'approved');
   };
 
-  const handleRejectKyc = (driverId: string) => {
-    const reason = prompt('Enter KYC rejection reason:');
-    if (reason) {
-      store.updateDriverKycStatus(driverId, 'rejected', reason);
+  const handleRejectKyc = async (driverId: string) => {
+    const reason = await dialog.prompt(
+      'Reject Driver KYC Verification',
+      'Please enter the official regulatory/compliance reason for rejection:',
+      'Vehicle fitness certificate or driver license unverified'
+    );
+    if (reason && reason.trim()) {
+      store.updateDriverKycStatus(driverId, 'rejected', reason.trim());
+      dialog.alert('Driver KYC Rejected', `Driver status updated to REJECTED. Reason: ${reason.trim()}`, 'info');
     }
   };
 
@@ -127,6 +133,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currency }) => {
   };
 
   const handleSaveAllPricing = () => {
+    // Validate that minimum fare cannot be lower than base fare
+    for (const config of editingPricing) {
+      if (config.minimumFareUSD < config.baseFareUSD) {
+        dialog.alert(
+          'Pricing Matrix Rule Violation',
+          `For vehicle category "${config.name}", the Minimum Fare ($${config.minimumFareUSD.toFixed(2)}) cannot be lower than the Base Fare ($${config.baseFareUSD.toFixed(2)}). The minimum fare sets the algorithmic price floor and must be ≥ base fare.`,
+          'warning'
+        );
+        return;
+      }
+    }
+
     store.updatePricingConfig(editingPricing);
     store.updatePlatformSettings({
       driverDebtCeilingUSD: debtCeilingInput,
@@ -135,7 +153,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currency }) => {
       exchangeRateUSDToZWG: exchangeRateInput,
       enforceGovernmentPermitGating: enforcePermitToggle
     });
-    setSaveSuccessMessage('Platform commission rates and algorithm matrices updated successfully!');
+    setSaveSuccessMessage('Platform commission rates, baseline algorithms & policies saved to Database successfully!');
     setTimeout(() => setSaveSuccessMessage(null), 4000);
   };
 
@@ -832,6 +850,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currency }) => {
                 <Save className="w-3.5 h-3.5 text-amber-400" />
                 <span>Save All Matrices</span>
               </button>
+            </div>
+
+            {/* Algorithmic Breakdown & How Values Contribute */}
+            <div className="bg-sky-50/70 border border-sky-200/80 rounded-lg p-3 space-y-2 text-xs">
+              <div className="flex items-center gap-2 text-sky-950 font-bold">
+                <Calculator className="w-4 h-4 text-sky-800" />
+                <span>How Variables Formulate Trip Pricing & Minimum Fare Enforcement</span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-[11px]">
+                <div className="bg-white p-2.5 rounded border border-sky-100 space-y-1">
+                  <span className="font-bold text-sky-900 block">1. Dynamic Meter Formula</span>
+                  <p className="text-slate-600 font-mono text-[10px]">
+                    Fare = Max(MinFare, BaseFare + (KM × PerKm) + (Min × PerMin)) × Surge
+                  </p>
+                  <p className="text-slate-500 text-[10px]">
+                    Base fare flag drop starts the calculation, then distance and time elapsed accumulate continuously.
+                  </p>
+                </div>
+                <div className="bg-white p-2.5 rounded border border-sky-100 space-y-1">
+                  <span className="font-bold text-emerald-900 block">2. Minimum Fare Floor</span>
+                  <p className="text-slate-600 font-mono text-[10px]">
+                    MinFare ≥ BaseFare (Guaranteed Driver Call-Out Floor)
+                  </p>
+                  <p className="text-slate-500 text-[10px]">
+                    Ensures drivers receive adequate compensation for ultra-short trips (e.g. 500m) where distance/time would otherwise yield sub-economic payouts.
+                  </p>
+                </div>
+                <div className="bg-white p-2.5 rounded border border-sky-100 space-y-1">
+                  <span className="font-bold text-amber-900 block">3. Commission & Cash Levy Split</span>
+                  <p className="text-slate-600 font-mono text-[10px]">
+                    Platform Cut = Fare × Commission % | Driver = Remainder
+                  </p>
+                  <p className="text-slate-500 text-[10px]">
+                    Cash trips automatically debit the platform levy from the driver's pre-funded wallet balance upon trip completion.
+                  </p>
+                </div>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3.5">

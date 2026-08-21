@@ -13,6 +13,7 @@ import { DriverApp } from './components/driver/DriverApp';
 import { AdminDashboard } from './components/admin/AdminDashboard';
 import { AuthModal } from './components/auth/AuthModal';
 import { DownloadAppModal } from './components/common/DownloadAppModal';
+import { CustomDialogModal } from './components/common/CustomDialogModal';
 import { Currency, Language, NavigationTab } from './types';
 
 export default function App() {
@@ -141,6 +142,9 @@ export default function App() {
         onClose={() => setShowDownloadModal(false)}
         defaultRole="rider"
       />
+
+      {/* Global Custom Alert / Confirm / Prompt Dialog */}
+      <CustomDialogModal />
 
       {/* Single-Instance Session Invalidation Notice */}
       {state.sessionTerminationNotice && (

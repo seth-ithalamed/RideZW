@@ -36,6 +36,7 @@ import { store } from '../../services/store';
 import { MapVisualizer } from '../common/MapVisualizer';
 import { DownloadAppModal } from '../common/DownloadAppModal';
 import { triggerLocalNotification } from '../../services/notificationService';
+import { dialog } from '../../services/dialogService';
 import {
   Currency,
   Language,
@@ -86,6 +87,43 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
   const [showCashCollectModal, setShowCashCollectModal] = useState(false);
   const [showDownloadModal, setShowDownloadModal] = useState(false);
 
+  // KYC Document Submission Form State
+  const [kycForm, setKycForm] = useState({
+    nationalIdNumber: activeDriver.nationalId || '',
+    licenseNumber: `DL-ZW-${Math.floor(100000 + Math.random() * 900000)}`,
+    vehicleFitnessNumber: `VID-ZW-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
+    policeClearanceNumber: `CID-ZRP-${Math.floor(10000 + Math.random() * 90000)}`,
+    insurancePolicyNumber: `ZIM-INS-${Math.floor(100000 + Math.random() * 900000)}`,
+    notes: ''
+  });
+  const [isSubmittingKyc, setIsSubmittingKyc] = useState(false);
+
+  // Continuous GPS Tracking Loop for logged-in driver
+  useEffect(() => {
+    if (!navigator.geolocation || !activeDriver) return;
+
+    // Initial position fetch
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        store.updateDriverGpsLocation(activeDriver.id, pos.coords.latitude, pos.coords.longitude);
+      },
+      (err) => console.warn('Driver initial GPS error:', err),
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        store.updateDriverGpsLocation(activeDriver.id, pos.coords.latitude, pos.coords.longitude);
+      },
+      (err) => console.warn('Driver GPS watch error:', err),
+      { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 }
+    );
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [activeDriver?.id]);
+
   // Background Alert on incoming trips
   const prevTripIdRef = useRef<string | null>(null);
   useEffect(() => {
@@ -121,7 +159,7 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
     try {
       store.setDriverOnline(activeDriver.id, !activeDriver.isOnline);
     } catch (err: any) {
-      alert(err.message);
+      dialog.alert('Online Status Error', err.message, 'warning');
     }
   };
 
@@ -130,7 +168,7 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
     try {
       store.driverSubmitOffer(activeDriver.id, activeTrip.proposedFareUSD);
     } catch (err: any) {
-      alert(err.message);
+      dialog.alert('Offer Submission Failed', err.message, 'warning');
     }
   };
 
@@ -140,7 +178,7 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
       store.driverSubmitOffer(activeDriver.id, customCounter);
       setShowCounterInput(false);
     } catch (err: any) {
-      alert(err.message);
+      dialog.alert('Counter Offer Failed', err.message, 'warning');
     }
   };
 
@@ -166,9 +204,13 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
         accountName: activeDriver.name
       });
       setShowPayoutModal(false);
-      alert('Withdrawal request submitted successfully to mobile money rail!');
+      dialog.alert(
+        'Withdrawal Requested',
+        `Successfully requested withdrawal of $${payoutAmount.toFixed(2)} to ${payoutMethod.toUpperCase()} (${payoutAccount}). Pending operations desk processing.`,
+        'success'
+      );
     } catch (err: any) {
-      alert(err.message);
+      dialog.alert('Withdrawal Error', err.message, 'warning');
     }
   };
 
@@ -186,7 +228,11 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
       paymentMethod: permitFeeMethod
     });
     setShowApplyPermitModal(false);
-    alert('Government E-Hailing Permit application and fee payment submitted to the Ministry of Transport!');
+    dialog.alert(
+      'Government Permit Application Lodged',
+      'Government E-Hailing Permit application and statutory fee payment submitted to the Ministry of Transport & IDBZ Portal.',
+      'success'
+    );
   };
 
   const handleDriverAppeal = () => {
@@ -197,7 +243,29 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
     });
     setShowAppealModal(false);
     setAppealReason('');
-    alert('Appeal lodged with the Transport Regulatory Appeals Tribunal.');
+    dialog.alert('Appeal Lodged', 'Appeal lodged with the Transport Regulatory Appeals Tribunal.', 'info');
+  };
+
+  const handleSubmitKycDocuments = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!kycForm.nationalIdNumber.trim() || !kycForm.licenseNumber.trim() || !kycForm.vehicleFitnessNumber.trim()) {
+      dialog.alert('Incomplete KYC Submission', 'Please fill in your National ID, Driver License, and VID Certificate numbers before submitting.', 'warning');
+      return;
+    }
+
+    setIsSubmittingKyc(true);
+    setTimeout(() => {
+      store.updateDriverProfile(activeDriver.id, {
+        nationalId: kycForm.nationalIdNumber,
+        kycStatus: 'pending'
+      });
+      setIsSubmittingKyc(false);
+      dialog.alert(
+        'KYC Documents Submitted',
+        'Your compliance documents have been submitted to the RideZW operations audit queue. An administrator will review your credentials shortly.',
+        'success'
+      );
+    }, 600);
   };
 
   const driverLedger = state.ledger.filter((l) => l.driverId === activeDriver.id);
@@ -402,92 +470,120 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
 
           {/* ACTIVE INCOMING FARE REQUEST */}
           {activeTrip && activeTrip.status === 'negotiating' && (
-            <div className="bg-white border-2 border-indigo-500 rounded-lg p-4 shadow-sm space-y-3">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-                <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-indigo-600 animate-ping" />
-                  <h3 className="text-slate-900 font-bold text-sm">Incoming Fare Offer ({activeTrip.category.toUpperCase()})</h3>
-                </div>
-                <div className="text-right">
-                  <span className="text-[10px] text-slate-400 block uppercase font-bold">Rider Proposes</span>
-                  <span className="text-base font-mono font-extrabold text-indigo-600">
-                    {formatMoney(activeTrip.proposedFareUSD)}
-                  </span>
-                </div>
-              </div>
+            (() => {
+              const distToPickupKm = Math.sqrt(
+                Math.pow((activeDriver.currentLat - activeTrip.pickup.lat) * 111, 2) +
+                Math.pow((activeDriver.currentLng - activeTrip.pickup.lng) * 111 * Math.cos((activeTrip.pickup.lat * Math.PI) / 180), 2)
+              ).toFixed(1);
+              const etaToPickupMins = Math.max(1, Math.round(Number(distToPickupKm) * 2.5));
 
-              {/* Rider & Route Details */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs bg-slate-50 p-2.5 rounded border border-slate-200">
-                <div>
-                  <span className="text-slate-400 block text-[10px] uppercase font-bold">Rider:</span>
-                  <p className="font-bold text-slate-900">{activeTrip.riderName}</p>
-                  <p className="text-slate-500 text-[11px]">Payment: <strong className="text-slate-700 uppercase">{activeTrip.paymentMethod}</strong></p>
-                </div>
-                <div>
-                  <span className="text-slate-400 block text-[10px] uppercase font-bold">Route:</span>
-                  <p className="text-slate-700 truncate"><strong>Pickup:</strong> {activeTrip.pickup.address}</p>
-                  <p className="text-slate-700 truncate"><strong>Dropoff:</strong> {activeTrip.destination.address}</p>
-                  <p className="text-slate-500 font-mono text-[10px] mt-0.5">{activeTrip.distanceKm} km • ~{activeTrip.estimatedDurationMin} mins</p>
-                </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  onClick={handleAcceptRiderPrice}
-                  className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded shadow-xs flex items-center justify-center gap-1.5"
-                >
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Accept at {formatMoney(activeTrip.proposedFareUSD)}</span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    setCustomCounter(Math.ceil(activeTrip.proposedFareUSD + 2.0));
-                    setShowCounterInput(true);
-                  }}
-                  className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 font-bold text-xs rounded shadow-xs flex items-center justify-center gap-1.5"
-                >
-                  <TrendingUp className="w-3.5 h-3.5 text-sky-800" />
-                  <span>Propose Counter-Offer</span>
-                </button>
-              </div>
-
-              {/* Counter Offer Input Sub-panel */}
-              {showCounterInput && (
-                <div className="p-3 bg-slate-50 rounded border border-indigo-200 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-[11px] font-bold text-slate-700">Your Counter Price (USD):</label>
-                    <span className="text-sm font-mono font-bold text-indigo-600">${Math.ceil(customCounter).toFixed(2)}</span>
+              return (
+                <div className="bg-white border-2 border-indigo-500 rounded-lg p-4 shadow-sm space-y-3">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-indigo-600 animate-ping" />
+                      <h3 className="text-slate-900 font-bold text-sm">Incoming Fare Offer ({activeTrip.category.toUpperCase()})</h3>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] text-slate-400 block uppercase font-bold">Rider Proposes</span>
+                      <span className="text-base font-mono font-extrabold text-indigo-600">
+                        {formatMoney(activeTrip.proposedFareUSD)}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    {[1, 2, 3].map((bump) => (
-                      <button
-                        key={bump}
-                        onClick={() => setCustomCounter(Math.ceil(activeTrip.proposedFareUSD + bump))}
-                        className="flex-1 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded font-mono font-bold text-xs"
-                      >
-                        +${bump}.00 (${Math.ceil(activeTrip.proposedFareUSD + bump).toFixed(2)})
-                      </button>
-                    ))}
+
+                  {/* Pickup Broadcast Telemetry */}
+                  <div className="bg-indigo-50/70 border border-indigo-200 rounded p-2.5 flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      <Navigation className="w-4 h-4 text-indigo-700 shrink-0" />
+                      <div>
+                        <span className="font-bold text-indigo-950 block text-[11px]">
+                          Pickup Location: {activeTrip.pickup.address}
+                        </span>
+                        <span className="text-[10px] text-indigo-700">
+                          {distToPickupKm} km from your current GPS position (~{etaToPickupMins} mins drive to pickup)
+                        </span>
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-mono font-bold bg-white text-indigo-800 border border-indigo-200 px-2 py-0.5 rounded shadow-2xs">
+                      {etaToPickupMins}m ETA
+                    </span>
                   </div>
-                  <div className="flex gap-2">
+
+                  {/* Rider & Route Details */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs bg-slate-50 p-2.5 rounded border border-slate-200">
+                    <div>
+                      <span className="text-slate-400 block text-[10px] uppercase font-bold">Rider:</span>
+                      <p className="font-bold text-slate-900">{activeTrip.riderName}</p>
+                      <p className="text-slate-500 text-[11px]">Payment: <strong className="text-slate-700 uppercase">{activeTrip.paymentMethod}</strong></p>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[10px] uppercase font-bold">Trip Route:</span>
+                      <p className="text-slate-700 truncate"><strong>Pickup:</strong> {activeTrip.pickup.address}</p>
+                      <p className="text-slate-700 truncate"><strong>Dropoff:</strong> {activeTrip.destination.address}</p>
+                      <p className="text-slate-500 font-mono text-[10px] mt-0.5">{activeTrip.distanceKm} km • ~{activeTrip.estimatedDurationMin} mins trip duration</p>
+                    </div>
+                  </div>
+
+                  {/* Action Buttons */}
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
-                      onClick={() => setShowCounterInput(false)}
-                      className="px-3 py-1 bg-white border border-slate-200 text-slate-600 text-xs font-semibold rounded"
+                      onClick={handleAcceptRiderPrice}
+                      className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded shadow-xs flex items-center justify-center gap-1.5"
                     >
-                      Cancel
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Accept at {formatMoney(activeTrip.proposedFareUSD)}</span>
                     </button>
+
                     <button
-                      onClick={handleSendCounterOffer}
-                      className="flex-1 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded shadow-xs"
+                      onClick={() => {
+                        setCustomCounter(Math.ceil(activeTrip.proposedFareUSD + 2.0));
+                        setShowCounterInput(true);
+                      }}
+                      className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 font-bold text-xs rounded shadow-xs flex items-center justify-center gap-1.5"
                     >
-                      Send Offer to Passenger
+                      <TrendingUp className="w-3.5 h-3.5 text-sky-800" />
+                      <span>Propose Counter-Offer</span>
                     </button>
                   </div>
+
+                  {/* Counter Offer Input Sub-panel */}
+                  {showCounterInput && (
+                    <div className="p-3 bg-slate-50 rounded border border-indigo-200 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] font-bold text-slate-700">Your Counter Price (USD):</label>
+                        <span className="text-sm font-mono font-bold text-indigo-600">${Math.ceil(customCounter).toFixed(2)}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        {[1, 2, 3].map((bump) => (
+                          <button
+                            key={bump}
+                            onClick={() => setCustomCounter(Math.ceil(activeTrip.proposedFareUSD + bump))}
+                            className="flex-1 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded font-mono font-bold text-xs"
+                          >
+                            +${bump}.00 (${Math.ceil(activeTrip.proposedFareUSD + bump).toFixed(2)})
+                          </button>
+                        ))}
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setShowCounterInput(false)}
+                          className="px-3 py-1 bg-white border border-slate-200 text-slate-600 text-xs font-semibold rounded"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleSendCounterOffer}
+                          className="flex-1 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded shadow-xs"
+                        >
+                          Send Offer to Passenger
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              );
+            })()
           )}
 
           {/* ACTIVE DISPATCHED TRIP IN PROGRESS HUD */}
@@ -889,47 +985,164 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
       {/* TAB 4: PLATFORM KYC DOCUMENTS */}
       {/* ============================================================= */}
       {driverTab === 'kyc' && (
-        <div className="bg-white border border-slate-200 rounded-lg p-4 sm:p-5 shadow-xs space-y-3">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+        <div className="bg-white border border-slate-200 rounded-lg p-4 sm:p-5 shadow-xs space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
             <div>
-              <h3 className="text-slate-900 font-bold text-xs">RideZW Platform KYC Checklist</h3>
-              <p className="text-[11px] text-slate-500">
-                Platform-level verification documents required to accept rides in Zimbabwe.
+              <h3 className="text-slate-900 font-bold text-sm flex items-center gap-2">
+                <FileText className="w-4 h-4 text-indigo-600" />
+                RideZW Driver KYC & Regulatory Compliance
+              </h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Statutory verification documents required to accept rides in Zimbabwe under the Transport Act.
               </p>
             </div>
             <span
-              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase ${
+              className={`px-2.5 py-1 rounded text-[10px] font-mono font-bold uppercase tracking-wider ${
                 activeDriver.kycStatus === 'approved'
                   ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                  : activeDriver.kycStatus === 'rejected'
+                  ? 'bg-rose-50 text-rose-700 border border-rose-200'
                   : 'bg-amber-50 text-amber-700 border border-amber-200'
               }`}
             >
-              KYC {activeDriver.kycStatus}
+              KYC Status: {activeDriver.kycStatus || 'PENDING'}
             </span>
           </div>
 
-          <div className="space-y-2">
-            {[
-              { label: 'National Identity Card', id: 'nid' },
-              { label: 'Class 4 Driver’s License', id: 'dl' },
-              { label: 'Vehicle Registration (Blue Book)', id: 'reg' },
-              { label: 'ZRP CID Police Clearance Certificate', id: 'pcr' },
-              { label: 'VID Certificate of Fitness', id: 'vid' }
-            ].map((doc) => (
-              <div
-                key={doc.id}
-                className="p-2.5 bg-slate-50 border border-slate-200 rounded flex items-center justify-between text-xs"
-              >
-                <div className="flex items-center gap-2">
-                  <FileText className="w-3.5 h-3.5 text-indigo-600" />
-                  <span className="font-bold text-slate-800">{doc.label}</span>
-                </div>
-                <span className="flex items-center gap-1 text-emerald-700 font-bold bg-emerald-50 px-2 py-0.2 rounded border border-emerald-200 text-[10px]">
-                  <CheckCircle2 className="w-3 h-3" /> VERIFIED
-                </span>
+          {/* Status Explanation Banners */}
+          {activeDriver.kycStatus === 'approved' ? (
+            <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded text-xs text-emerald-900 flex items-start gap-2.5">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">KYC Clearance Approved & Active</p>
+                <p className="text-[11px] text-emerald-700 mt-0.5">
+                  Your identity, driving license, VID fitness certificate, and criminal clearance have been verified by the RideZW compliance desk.
+                </p>
               </div>
-            ))}
-          </div>
+            </div>
+          ) : activeDriver.kycStatus === 'rejected' ? (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded text-xs text-rose-900 flex items-start gap-2.5">
+              <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">KYC Submission Rejected</p>
+                <p className="text-[11px] text-rose-700 mt-0.5">
+                  {activeDriver.kycRejectionReason || 'Please review your uploaded certificates, re-verify registration and identity numbers, and resubmit for approval.'}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="p-3 bg-amber-50/70 border border-amber-200 rounded text-xs text-amber-900 flex items-start gap-2.5">
+              <Clock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">KYC Submission Required / Under Review</p>
+                <p className="text-[11px] text-amber-800 mt-0.5">
+                  New driver accounts must submit their official identity and vehicle certificates. Upon account creation, accounts remain unverified until reviewed and approved by the compliance desk.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Document Checklist and Upload Form */}
+          <form onSubmit={handleSubmitKycDocuments} className="space-y-3">
+            <div className="space-y-2">
+              {[
+                {
+                  id: 'nid',
+                  label: 'National Identity Card (Metal or Plastic ID)',
+                  desc: 'Format: 63-123456-X-78',
+                  value: kycForm.nationalIdNumber,
+                  onChange: (val: string) => setKycForm((prev) => ({ ...prev, nationalIdNumber: val })),
+                  required: true
+                },
+                {
+                  id: 'dl',
+                  label: 'Class 4 / 2 Driver’s License',
+                  desc: 'Valid Zimbabwean Driving License Card number',
+                  value: kycForm.licenseNumber,
+                  onChange: (val: string) => setKycForm((prev) => ({ ...prev, licenseNumber: val })),
+                  required: true
+                },
+                {
+                  id: 'vid',
+                  label: 'VID Certificate of Vehicle Fitness',
+                  desc: 'Vehicle Inspection Department roadworthiness certificate',
+                  value: kycForm.vehicleFitnessNumber,
+                  onChange: (val: string) => setKycForm((prev) => ({ ...prev, vehicleFitnessNumber: val })),
+                  required: true
+                },
+                {
+                  id: 'pcr',
+                  label: 'ZRP CID Police Clearance Certificate',
+                  desc: 'Criminal Investigation Department clearance issued within 6 months',
+                  value: kycForm.policeClearanceNumber,
+                  onChange: (val: string) => setKycForm((prev) => ({ ...prev, policeClearanceNumber: val })),
+                  required: true
+                },
+                {
+                  id: 'ins',
+                  label: 'Passenger & Vehicle Insurance Policy',
+                  desc: 'Comprehensive or Third Party Statutory Insurance reference',
+                  value: kycForm.insurancePolicyNumber,
+                  onChange: (val: string) => setKycForm((prev) => ({ ...prev, insurancePolicyNumber: val })),
+                  required: true
+                }
+              ].map((doc) => {
+                const isVerified = activeDriver.kycStatus === 'approved';
+                return (
+                  <div
+                    key={doc.id}
+                    className="p-3 bg-slate-50 border border-slate-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs"
+                  >
+                    <div className="space-y-0.5 max-w-sm">
+                      <div className="flex items-center gap-2">
+                        <FileText className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                        <span className="font-bold text-slate-800">{doc.label}</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 pl-5.5">{doc.desc}</p>
+                    </div>
+
+                    <div className="flex items-center gap-2 pl-5.5 sm:pl-0">
+                      <input
+                        type="text"
+                        disabled={isVerified}
+                        value={doc.value}
+                        onChange={(e) => doc.onChange(e.target.value)}
+                        placeholder="Document / Ref Number"
+                        className="bg-white border border-slate-200 rounded px-2.5 py-1 text-xs font-mono font-bold text-slate-900 w-44 disabled:bg-slate-100 disabled:text-slate-500"
+                      />
+                      {isVerified ? (
+                        <span className="flex items-center gap-1 text-emerald-700 font-bold bg-emerald-50 px-2 py-1 rounded border border-emerald-200 text-[10px] shrink-0">
+                          <CheckCircle2 className="w-3 h-3" /> VERIFIED
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => dialog.alert('Document Attachment', `Attached digital copy of ${doc.label}. Reference: ${doc.value || 'Pending'}`, 'info')}
+                          className="px-2 py-1 bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 rounded text-[10px] font-bold flex items-center gap-1 shrink-0 shadow-2xs"
+                        >
+                          <Upload className="w-2.5 h-2.5 text-indigo-600" />
+                          <span>Attach</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {activeDriver.kycStatus !== 'approved' && (
+              <div className="pt-2 flex justify-end">
+                <button
+                  type="submit"
+                  disabled={isSubmittingKyc}
+                  className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded shadow-xs flex items-center gap-2 disabled:opacity-50"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>{isSubmittingKyc ? 'Submitting Documents...' : 'Submit KYC Documents for Audit'}</span>
+                </button>
+              </div>
+            )}
+          </form>
         </div>
       )}
 
