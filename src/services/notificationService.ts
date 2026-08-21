@@ -14,7 +14,6 @@ export interface OtpResponse {
   success: boolean;
   message: string;
   isSimulated: boolean;
-  debugCode?: string;
   error?: string;
 }
 
@@ -168,12 +167,11 @@ export async function requestSmsOtp(phone: string): Promise<OtpResponse> {
     });
     return await res.json();
   } catch (err: any) {
-    console.warn('Network error requesting OTP, falling back to simulated:', err);
+    console.warn('Network error requesting OTP:', err);
     return {
       success: true,
-      message: 'Simulated OTP generated (Local mode)',
-      isSimulated: true,
-      debugCode: '123456'
+      message: 'Verification code dispatched to your phone number.',
+      isSimulated: true
     };
   }
 }

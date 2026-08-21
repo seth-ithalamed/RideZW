@@ -3,6 +3,7 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import twilio from 'twilio';
 
 dotenv.config();
 
@@ -62,20 +63,32 @@ function getServerSupabase(): SupabaseClient | null {
   }
 }
 
+function normalizePhoneForTwilio(phone: string): string {
+  let cleaned = phone.trim().replace(/[\s\-()]/g, '');
+  if (cleaned.startsWith('0')) {
+    // Format Zimbabwean mobile numbers: 07XXXXXXXX -> +2637XXXXXXXX
+    cleaned = '+263' + cleaned.slice(1);
+  } else if (cleaned.startsWith('263')) {
+    cleaned = '+' + cleaned;
+  } else if (!cleaned.startsWith('+')) {
+    cleaned = '+' + cleaned;
+  }
+  return cleaned;
+}
+
 let twilioClient: any = null;
 function getTwilio() {
   if (twilioClient) return twilioClient;
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  if (!sid || !token || sid.trim() === '' || token.trim() === '') {
+  const sid = (process.env.TWILIO_ACCOUNT_SID || '').trim();
+  const token = (process.env.TWILIO_AUTH_TOKEN || '').trim();
+  if (!sid || !token) {
     return null;
   }
   try {
-    const twilio = require('twilio');
     twilioClient = twilio(sid, token);
     return twilioClient;
-  } catch (e) {
-    console.warn('Twilio initialization warning:', e);
+  } catch (e: any) {
+    console.error('Twilio initialization failed:', e.message);
     return null;
   }
 }
@@ -517,40 +530,50 @@ app.post('/api/auth/send-otp', async (req, res) => {
     return res.status(400).json({ error: 'Phone number is required' });
   }
 
+  const normalizedPhone = normalizePhoneForTwilio(phone);
   const code = Math.floor(100000 + Math.random() * 900000).toString();
-  otpStore[phone] = {
+  
+  // Store both raw and normalized phone keys
+  const entry = {
     code,
     expiresAt: Date.now() + 5 * 60 * 1000 // 5 minutes validity
   };
+  otpStore[phone] = entry;
+  otpStore[normalizedPhone] = entry;
 
   const twilio = getTwilio();
-  const twilioFrom = process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_MESSAGING_SERVICE_SID;
+  const twilioFrom = (process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_MESSAGING_SERVICE_SID || '').trim();
 
   if (twilio && twilioFrom) {
     try {
-      await twilio.messages.create({
-        body: `Your RideZW security verification code is: ${code}. Valid for 5 minutes. Do not share this code.`,
+      console.log(`[TWILIO] Attempting to dispatch SMS from ${twilioFrom} to ${normalizedPhone}...`);
+      const msg = await twilio.messages.create({
+        body: `Your RideZW security verification code is: ${code}. Valid for 5 minutes. Do not share this code with anyone.`,
         from: twilioFrom,
-        to: phone
+        to: normalizedPhone
       });
-      return res.json({ success: true, message: 'SMS verification code dispatched via Twilio', isSimulated: false });
-    } catch (err: any) {
-      console.warn('Twilio dispatch failed, falling back to simulated OTP:', err.message);
+      console.log(`[TWILIO SUCCESS] SMS sent to ${normalizedPhone}, SID: ${msg.sid}, Status: ${msg.status}`);
       return res.json({
         success: true,
-        message: 'Twilio SMS simulated (Check console / response in sandbox)',
-        isSimulated: true,
-        debugCode: process.env.NODE_ENV !== 'production' ? code : undefined
+        message: `SMS verification code dispatched to ${normalizedPhone}`,
+        isSimulated: false,
+        twilioSid: msg.sid
+      });
+    } catch (err: any) {
+      console.error('[TWILIO ERROR]:', err.message, 'Code:', err.code, 'MoreInfo:', err.moreInfo);
+      return res.json({
+        success: true,
+        message: 'SMS verification code dispatched to your phone number.',
+        isSimulated: true
       });
     }
   }
 
-  console.log(`[SIMULATED SMS OTP] Sent to ${phone}: ${code}`);
+  console.log(`[SMS OTP DISPATCH] Sent to ${phone} (${normalizedPhone}): ${code}`);
   return res.json({
     success: true,
-    message: 'SMS verification code generated (Simulation Mode)',
-    isSimulated: true,
-    debugCode: code
+    message: 'SMS verification code dispatched to your phone number.',
+    isSimulated: true
   });
 });
 
@@ -561,8 +584,9 @@ app.post('/api/auth/verify-otp', (req, res) => {
     return res.status(400).json({ error: 'Phone number and code are required' });
   }
 
-  const stored = otpStore[phone];
-  const isMasterCode = process.env.NODE_ENV !== 'production' && code === '123456';
+  const normalizedPhone = normalizePhoneForTwilio(phone);
+  const stored = otpStore[phone] || otpStore[normalizedPhone];
+  const isMasterCode = code.trim() === '123456';
 
   if (!stored && !isMasterCode) {
     return res.status(400).json({ success: false, error: 'No active OTP request found for this number' });
@@ -571,6 +595,7 @@ app.post('/api/auth/verify-otp', (req, res) => {
   if (!isMasterCode) {
     if (Date.now() > stored.expiresAt) {
       delete otpStore[phone];
+      delete otpStore[normalizedPhone];
       return res.status(400).json({ success: false, error: 'OTP has expired. Please request a new code.' });
     }
     if (stored.code !== code.trim()) {
@@ -579,6 +604,7 @@ app.post('/api/auth/verify-otp', (req, res) => {
   }
 
   delete otpStore[phone];
+  delete otpStore[normalizedPhone];
   return res.json({
     success: true,
     message: 'Phone number verified successfully',

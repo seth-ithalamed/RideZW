@@ -35,6 +35,7 @@ import confetti from 'canvas-confetti';
 import { store } from '../../services/store';
 import { MapVisualizer } from '../common/MapVisualizer';
 import { DownloadAppModal } from '../common/DownloadAppModal';
+import { DriverDebtSettlementModal } from './DriverDebtSettlementModal';
 import { triggerLocalNotification } from '../../services/notificationService';
 import { dialog } from '../../services/dialogService';
 import {
@@ -714,20 +715,39 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
       {driverTab === 'wallet' && (
         <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="bg-white border border-slate-200 p-4 rounded-lg shadow-xs">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Net Balance</span>
-              <p
-                className={`text-xl font-mono font-bold mt-1 ${
-                  activeDriver.walletBalance < 0 ? 'text-rose-600' : 'text-emerald-700'
-                }`}
-              >
-                {formatMoney(activeDriver.walletBalance)}
-              </p>
-              <p className="text-[10px] text-slate-500 mt-0.5">
-                {activeDriver.walletBalance < 0
-                  ? `Cash debt: ${formatMoney(Math.abs(activeDriver.walletBalance))}`
-                  : 'Available for instant withdrawal'}
-              </p>
+            <div className="bg-white border border-slate-200 p-4 rounded-lg shadow-xs flex flex-col justify-between">
+              <div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Net Balance</span>
+                <p
+                  className={`text-xl font-mono font-bold mt-1 ${
+                    activeDriver.walletBalance < 0 ? 'text-rose-600' : 'text-emerald-700'
+                  }`}
+                >
+                  {formatMoney(activeDriver.walletBalance)}
+                </p>
+                <p className="text-[10px] text-slate-500 mt-0.5">
+                  {activeDriver.walletBalance < 0
+                    ? `Cash debt: ${formatMoney(Math.abs(activeDriver.walletBalance))}`
+                    : 'Available for instant withdrawal'}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-1.5 mt-3 pt-2 border-t border-slate-100">
+                <button
+                  onClick={() => setShowTopupModal(true)}
+                  className="flex-1 py-1.5 px-2 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-[11px] text-center shadow-2xs cursor-pointer transition-colors"
+                >
+                  {activeDriver.walletBalance < 0 ? 'Settle Debt' : 'Top Up Wallet'}
+                </button>
+                {activeDriver.walletBalance > 0 && (
+                  <button
+                    onClick={() => setShowPayoutModal(true)}
+                    className="flex-1 py-1.5 px-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] text-center cursor-pointer transition-colors"
+                  >
+                    Withdraw
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="bg-white border border-slate-200 p-4 rounded-lg shadow-xs">
@@ -1191,68 +1211,14 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
       )}
 
       {/* ------------------------------------------------------------- */}
-      {/* SETTLE DEBT MODAL */}
+      {/* RICH MULTI-RAIL DRIVER DEBT SETTLEMENT & TOP-UP MODAL */}
       {/* ------------------------------------------------------------- */}
-      {showTopupModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-lg w-full max-w-sm p-5 shadow-2xl space-y-3">
-            <h3 className="text-slate-900 font-bold text-sm">Settle Cash Debt & Top-up</h3>
-
-            <div className="space-y-2 text-xs">
-              <div>
-                <label className="text-slate-700 font-semibold block mb-0.5">Amount (USD)</label>
-                <input
-                  type="number"
-                  value={topupAmount}
-                  onChange={(e) => setTopupAmount(Number(e.target.value))}
-                  className="w-full bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5 text-xs text-slate-900 font-bold"
-                />
-              </div>
-
-              <div>
-                <label className="text-slate-700 font-semibold block mb-0.5">Payment Rail</label>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                  {[
-                    { id: 'clicknpay', label: 'ClicknPay (OpenAPI)' },
-                    { id: 'ecocash', label: 'EcoCash' },
-                    { id: 'onemoney', label: 'OneMoney' },
-                    { id: 'innbucks', label: 'InnBucks' },
-                    { id: 'telecash', label: 'Telecash' },
-                    { id: 'zipit_bank', label: 'ZIPIT Bank' }
-                  ].map((pm) => (
-                    <button
-                      key={pm.id}
-                      onClick={() => setTopupMethod(pm.id as PaymentMethod)}
-                      className={`p-2 rounded border text-left font-bold capitalize text-xs ${
-                        topupMethod === pm.id
-                          ? 'bg-indigo-50 text-indigo-700 border-indigo-500'
-                          : 'bg-white border-slate-200 text-slate-700'
-                      }`}
-                    >
-                      {pm.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex gap-2 pt-1">
-              <button
-                onClick={() => setShowTopupModal(false)}
-                className="flex-1 py-2 rounded bg-slate-100 text-slate-700 font-semibold text-xs"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSettleDebt}
-                className="flex-1 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs"
-              >
-                Pay ${topupAmount.toFixed(2)}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DriverDebtSettlementModal
+        isOpen={showTopupModal}
+        onClose={() => setShowTopupModal(false)}
+        driver={activeDriver}
+        currency={currency}
+      />
 
       {/* ------------------------------------------------------------- */}
       {/* PAYOUT WITHDRAWAL MODAL */}
