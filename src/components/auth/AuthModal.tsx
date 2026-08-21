@@ -102,14 +102,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setAuthError('');
     setSuccessMessage(null);
     try {
-      await requestSmsOtp(signInIdentifier.trim());
+      const res = await requestSmsOtp(signInIdentifier.trim());
+      if (res.success) {
+        setOtpSent(true);
+        setOtpCode('');
+        setSuccessMessage(`Verification code sent via SMS to ${signInIdentifier.trim()}`);
+      } else {
+        // Show exact failure reason (e.g., Missing Twilio credentials or Twilio error)
+        setAuthError(res.error || res.message || 'Failed to dispatch SMS via Twilio.');
+        // Still allow entering OTP or master code if in development
+        setOtpSent(true);
+      }
+    } catch (err: any) {
+      setAuthError(err.message || 'Failed to connect to SMS service.');
       setOtpSent(true);
-      setOtpCode('');
-      setSuccessMessage(`Verification code sent via SMS to ${signInIdentifier.trim()}`);
-    } catch {
-      setOtpSent(true);
-      setOtpCode('');
-      setSuccessMessage(`Verification code sent via SMS to ${signInIdentifier.trim()}`);
     } finally {
       setOtpLoading(false);
     }

@@ -541,38 +541,66 @@ app.post('/api/auth/send-otp', async (req, res) => {
   otpStore[phone] = entry;
   otpStore[normalizedPhone] = entry;
 
-  const twilio = getTwilio();
+  const twilioSid = (process.env.TWILIO_ACCOUNT_SID || '').trim();
+  const twilioToken = (process.env.TWILIO_AUTH_TOKEN || '').trim();
   const twilioFrom = (process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_MESSAGING_SERVICE_SID || '').trim();
 
-  if (twilio && twilioFrom) {
+  // If Twilio credentials are provided in environment
+  if (twilioSid && twilioToken && twilioFrom) {
     try {
-      console.log(`[TWILIO] Attempting to dispatch SMS from ${twilioFrom} to ${normalizedPhone}...`);
-      const msg = await twilio.messages.create({
+      console.log(`[TWILIO] Initiating API dispatch from ${twilioFrom} to ${normalizedPhone}...`);
+      const twilioInstance = getTwilio();
+      if (!twilioInstance) {
+        throw new Error('Failed to initialize Twilio client with provided credentials');
+      }
+
+      const msgParams: any = {
         body: `Your RideZW security verification code is: ${code}. Valid for 5 minutes. Do not share this code with anyone.`,
-        from: twilioFrom,
         to: normalizedPhone
-      });
-      console.log(`[TWILIO SUCCESS] SMS sent to ${normalizedPhone}, SID: ${msg.sid}, Status: ${msg.status}`);
+      };
+
+      if (twilioFrom.startsWith('MG')) {
+        msgParams.messagingServiceSid = twilioFrom;
+      } else {
+        msgParams.from = twilioFrom;
+      }
+
+      const msg = await twilioInstance.messages.create(msgParams);
+      console.log(`[TWILIO SUCCESS] SMS queued/sent to ${normalizedPhone}. SID: ${msg.sid}, Status: ${msg.status}`);
       return res.json({
         success: true,
-        message: `SMS verification code dispatched to ${normalizedPhone}`,
+        message: `SMS dispatched via Twilio to ${normalizedPhone}`,
         isSimulated: false,
-        twilioSid: msg.sid
+        twilioSid: msg.sid,
+        twilioStatus: msg.status
       });
     } catch (err: any) {
-      console.error('[TWILIO ERROR]:', err.message, 'Code:', err.code, 'MoreInfo:', err.moreInfo);
+      console.error('[TWILIO ERROR DETAILS]:', {
+        message: err.message,
+        code: err.code,
+        status: err.status,
+        moreInfo: err.moreInfo
+      });
       return res.json({
-        success: true,
-        message: 'SMS verification code dispatched to your phone number.',
+        success: false,
+        error: `Twilio Error (${err.code || 'API'}): ${err.message}`,
+        message: err.message,
         isSimulated: true
       });
     }
   }
 
-  console.log(`[SMS OTP DISPATCH] Sent to ${phone} (${normalizedPhone}): ${code}`);
+  // If Twilio env vars are missing
+  const missingVars = [];
+  if (!twilioSid) missingVars.push('TWILIO_ACCOUNT_SID');
+  if (!twilioToken) missingVars.push('TWILIO_AUTH_TOKEN');
+  if (!twilioFrom) missingVars.push('TWILIO_PHONE_NUMBER / TWILIO_MESSAGING_SERVICE_SID');
+
+  console.log(`[SMS OTP SIMULATED] Missing: [${missingVars.join(', ')}]. Code for ${normalizedPhone}: ${code}`);
   return res.json({
-    success: true,
-    message: 'SMS verification code dispatched to your phone number.',
+    success: false,
+    error: `Twilio credentials not configured in environment (Missing: ${missingVars.join(', ')})`,
+    message: `Twilio credentials not configured in environment (Missing: ${missingVars.join(', ')})`,
     isSimulated: true
   });
 });
