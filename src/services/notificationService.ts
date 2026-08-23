@@ -14,6 +14,14 @@ export interface OtpResponse {
   success: boolean;
   message: string;
   isSimulated: boolean;
+  code?: string;
+  dispatchedMessage?: string;
+  targetPhone?: string;
+  twilioSid?: string;
+  twilioStatus?: string;
+  twilioFrom?: string;
+  twilioError?: string;
+  missingConfig?: string[];
   error?: string;
 }
 

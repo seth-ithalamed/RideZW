@@ -14,12 +14,17 @@ import {
   KeyRound,
   Loader2,
   RotateCw,
-  Edit3
+  Edit3,
+  MessageSquare,
+  Sparkles,
+  Radio,
+  Copy,
+  Check
 } from 'lucide-react';
 import { store } from '../../services/store';
 import { CoverageCity } from '../../types';
 import { RideZWLogo } from '../common/RideZWLogo';
-import { requestSmsOtp, verifySmsOtp } from '../../services/notificationService';
+import { requestSmsOtp, verifySmsOtp, OtpResponse } from '../../services/notificationService';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -46,6 +51,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [otpCode, setOtpCode] = useState('');
   const [otpSent, setOtpSent] = useState(false);
   const [otpLoading, setOtpLoading] = useState(false);
+  const [otpDetails, setOtpDetails] = useState<OtpResponse | null>(null);
+  const [copiedCode, setCopiedCode] = useState(false);
   const [authError, setAuthError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -85,6 +92,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setSignInPassword('');
     setOtpCode('');
     setOtpSent(false);
+    setOtpDetails(null);
     if (role === 'admin') {
       setSignInIdentifier('seth.bbd@gmail.com');
     } else {
@@ -103,15 +111,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setSuccessMessage(null);
     try {
       const res = await requestSmsOtp(signInIdentifier.trim());
-      if (res.success) {
-        setOtpSent(true);
-        setOtpCode('');
-        setSuccessMessage(`Verification code sent via SMS to ${signInIdentifier.trim()}`);
-      } else {
-        // Show exact failure reason (e.g., Missing Twilio credentials or Twilio error)
-        setAuthError(res.error || res.message || 'Failed to dispatch SMS via Twilio.');
-        // Still allow entering OTP or master code if in development
-        setOtpSent(true);
+      setOtpDetails(res);
+      setOtpSent(true);
+      if (res.code) {
+        // Auto-populate for convenient testing if requested
+      }
+      setSuccessMessage(`SMS request processed for ${res.targetPhone || signInIdentifier.trim()}`);
+      if (res.twilioError) {
+        setAuthError(res.twilioError);
       }
     } catch (err: any) {
       setAuthError(err.message || 'Failed to connect to SMS service.');
@@ -450,8 +457,68 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
                   {/* OTP Code Entry Section (Appears after code is sent) */}
                   {otpSent && (
-                    <div className="space-y-2 pt-1 animate-in fade-in slide-in-from-top-2">
-                      <div className="flex items-center justify-between">
+                    <div className="space-y-3 pt-1 animate-in fade-in slide-in-from-top-2">
+                      {/* Live Backend Message Payload Display */}
+                      <div className="bg-slate-900 border border-slate-700 rounded-xl p-3 text-slate-100 shadow-md">
+                        <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2">
+                          <div className="flex items-center gap-1.5 text-[11px] font-bold text-amber-400">
+                            <MessageSquare className="w-3.5 h-3.5" />
+                            <span>Backend SMS Message Payload</span>
+                          </div>
+                          <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
+                            otpDetails?.twilioSid 
+                              ? 'bg-emerald-950 text-emerald-300 border border-emerald-700' 
+                              : otpDetails?.twilioError 
+                              ? 'bg-rose-950 text-rose-300 border border-rose-700'
+                              : 'bg-sky-950 text-sky-300 border border-sky-700'
+                          }`}>
+                            {otpDetails?.twilioSid 
+                              ? `Twilio (${otpDetails.twilioStatus || 'sent'})` 
+                              : otpDetails?.twilioError 
+                              ? 'Twilio Err / Test Mode' 
+                              : 'Test / Local'}
+                          </span>
+                        </div>
+
+                        {/* Exact Message Sent */}
+                        <div className="bg-slate-950/80 rounded-lg p-2 border border-slate-800 font-mono text-[11px] text-slate-300 leading-relaxed">
+                          <p className="text-[10px] text-slate-500 font-sans uppercase font-bold tracking-tight mb-1 flex items-center justify-between">
+                            <span>To: {otpDetails?.targetPhone || signInIdentifier}</span>
+                            {otpDetails?.twilioSid && (
+                              <span className="text-[9px] text-emerald-400">SID: {otpDetails.twilioSid.slice(0, 10)}...</span>
+                            )}
+                          </p>
+                          <p className="text-amber-300 font-sans bg-slate-900/90 p-2 rounded border border-slate-800">
+                            "{otpDetails?.dispatchedMessage || `Your RideZW security verification code is: ${otpDetails?.code || '123456'}. Valid for 5 minutes. Do not share this code with anyone.`}"
+                          </p>
+                        </div>
+
+                        {/* Quick Auto-Fill Action */}
+                        {otpDetails?.code && (
+                          <div className="mt-2.5 flex items-center justify-between bg-amber-400/10 border border-amber-400/30 rounded-lg p-2">
+                            <div className="flex items-center gap-1.5">
+                              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                              <span className="text-[11px] font-bold text-amber-200">
+                                Code: <span className="font-mono text-white text-xs bg-slate-900 px-1.5 py-0.5 rounded border border-amber-400/50">{otpDetails.code}</span>
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOtpCode(otpDetails.code || '');
+                                setCopiedCode(true);
+                                setTimeout(() => setCopiedCode(false), 2000);
+                              }}
+                              className="text-[10px] bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold px-2 py-1 rounded transition-colors flex items-center gap-1 shadow-sm"
+                            >
+                              {copiedCode ? <Check className="w-3 h-3 text-emerald-900" /> : <Copy className="w-3 h-3" />}
+                              <span>{copiedCode ? 'Auto-Filled!' : 'Auto-Fill Code'}</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between pt-1">
                         <label className="text-[11px] font-bold text-slate-700 uppercase tracking-tight">
                           6-Digit SMS Verification Code
                         </label>
@@ -476,12 +543,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                           value={otpCode}
                           onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
                           placeholder="••••••"
-                          className="w-full bg-transparent text-sm text-slate-900 font-mono font-bold tracking-widest text-center focus:outline-none"
+                          className="w-full bg-transparent text-base text-slate-900 font-mono font-bold tracking-widest text-center focus:outline-none"
                         />
                       </div>
 
                       <p className="text-[10px] text-slate-500 text-center">
-                        Enter the 6-digit code sent to your mobile phone via SMS.
+                        Enter the 6-digit code sent via SMS. <span className="text-sky-800 font-semibold">(Master code 123456 is also valid)</span>
                       </p>
                     </div>
                   )}

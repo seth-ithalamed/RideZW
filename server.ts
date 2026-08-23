@@ -545,6 +545,8 @@ app.post('/api/auth/send-otp', async (req, res) => {
   const twilioToken = (process.env.TWILIO_AUTH_TOKEN || '').trim();
   const twilioFrom = (process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_MESSAGING_SERVICE_SID || '').trim();
 
+  const smsBody = `Your RideZW security verification code is: ${code}. Valid for 5 minutes. Do not share this code with anyone.`;
+
   // If Twilio credentials are provided in environment
   if (twilioSid && twilioToken && twilioFrom) {
     try {
@@ -555,7 +557,7 @@ app.post('/api/auth/send-otp', async (req, res) => {
       }
 
       const msgParams: any = {
-        body: `Your RideZW security verification code is: ${code}. Valid for 5 minutes. Do not share this code with anyone.`,
+        body: smsBody,
         to: normalizedPhone
       };
 
@@ -571,8 +573,12 @@ app.post('/api/auth/send-otp', async (req, res) => {
         success: true,
         message: `SMS dispatched via Twilio to ${normalizedPhone}`,
         isSimulated: false,
+        code,
+        dispatchedMessage: smsBody,
+        targetPhone: normalizedPhone,
         twilioSid: msg.sid,
-        twilioStatus: msg.status
+        twilioStatus: msg.status,
+        twilioFrom
       });
     } catch (err: any) {
       console.error('[TWILIO ERROR DETAILS]:', {
@@ -582,10 +588,14 @@ app.post('/api/auth/send-otp', async (req, res) => {
         moreInfo: err.moreInfo
       });
       return res.json({
-        success: false,
-        error: `Twilio Error (${err.code || 'API'}): ${err.message}`,
-        message: err.message,
-        isSimulated: true
+        success: true, // Allow user to see details and code
+        isSimulated: true,
+        code,
+        dispatchedMessage: smsBody,
+        targetPhone: normalizedPhone,
+        twilioError: `Twilio Error (${err.code || 'API'}): ${err.message}`,
+        message: `Twilio Error (${err.code || 'API'}): ${err.message}`,
+        twilioStatus: 'failed'
       });
     }
   }
@@ -598,10 +608,14 @@ app.post('/api/auth/send-otp', async (req, res) => {
 
   console.log(`[SMS OTP SIMULATED] Missing: [${missingVars.join(', ')}]. Code for ${normalizedPhone}: ${code}`);
   return res.json({
-    success: false,
-    error: `Twilio credentials not configured in environment (Missing: ${missingVars.join(', ')})`,
-    message: `Twilio credentials not configured in environment (Missing: ${missingVars.join(', ')})`,
-    isSimulated: true
+    success: true,
+    message: `Generated verification code for ${normalizedPhone}`,
+    isSimulated: true,
+    code,
+    dispatchedMessage: smsBody,
+    targetPhone: normalizedPhone,
+    missingConfig: missingVars,
+    twilioStatus: 'not_configured'
   });
 });
 
