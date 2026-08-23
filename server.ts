@@ -134,6 +134,73 @@ function getFirebaseAdmin() {
 // =============================================================================
 
 // 1. Health & Configuration Status Endpoint
+
+
+// Mobile API boundary: mobile clients never connect to Supabase directly.
+async function requireMobileUser(req: any, res: any): Promise<any | null> {
+  const header = String(req.headers.authorization || '');
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  const sb = getServerSupabase();
+  if (!token || !sb) { res.status(401).json({ error: 'Authentication required' }); return null; }
+  const { data, error } = await sb.auth.getUser(token);
+  if (error || !data.user) { res.status(401).json({ error: 'Invalid or expired session' }); return null; }
+  return data.user;
+}
+
+app.post('/api/mobile/auth/signup', async (req, res) => {
+  const { email, password, role = 'rider', name, phone } = req.body || {};
+  if (!email || !password || !['rider', 'driver'].includes(role)) return res.status(400).json({ error: 'email, password, and a valid role are required' });
+  const sb = getServerSupabase();
+  if (!sb) return res.status(503).json({ error: 'Authentication service is not configured' });
+  const { data, error } = await sb.auth.signUp({ email, password, options: { data: { role, name: name || '', phone: phone || '' } } });
+  if (error) return res.status(400).json({ error: error.message });
+  return res.status(201).json({ user: data.user, session: data.session });
+});
+
+app.post('/api/mobile/auth/signin', async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) return res.status(400).json({ error: 'email and password are required' });
+  const sb = getServerSupabase();
+  if (!sb) return res.status(503).json({ error: 'Authentication service is not configured' });
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  if (error || !data.session) return res.status(401).json({ error: error?.message || 'Invalid credentials' });
+  return res.json({ user: data.user, session: data.session });
+});
+
+app.post('/api/mobile/auth/refresh', async (req, res) => {
+  const { refreshToken } = req.body || {};
+  const sb = getServerSupabase();
+  if (!sb || !refreshToken) return res.status(400).json({ error: 'refreshToken is required' });
+  const { data, error } = await sb.auth.refreshSession({ refresh_token: refreshToken });
+  if (error || !data.session) return res.status(401).json({ error: error?.message || 'Session refresh failed' });
+  return res.json({ user: data.user, session: data.session });
+});
+
+app.get('/api/mobile/auth/me', async (req, res) => {
+  const user = await requireMobileUser(req, res); if (!user) return;
+  return res.json({ user });
+});
+
+app.post('/api/mobile/trips', async (req, res) => {
+  const user = await requireMobileUser(req, res); if (!user) return;
+  const input = req.body || {};
+  if (!input.pickup || !input.destination) return res.status(400).json({ error: 'pickup and destination are required' });
+  const trip = { ...input, id: input.id || 'trip_' + Date.now().toString(36), riderId: user.id, status: 'requested', createdAt: new Date().toISOString() };
+  serverDb.trips.set(trip.id, trip);
+  const sb = getServerSupabase();
+  if (sb) await sb.from('trips').upsert({ id: trip.id, rider_id: user.id, category: trip.category || 'economy', status: trip.status, pickup_address: trip.pickup, dest_address: trip.destination, created_at: trip.createdAt });
+  return res.status(201).json({ success: true, trip });
+});
+
+app.post('/api/mobile/driver/availability', async (req, res) => {
+  const user = await requireMobileUser(req, res); if (!user) return;
+  if (user.user_metadata?.role !== 'driver') return res.status(403).json({ error: 'Driver role required' });
+  const isOnline = Boolean(req.body?.isOnline);
+  const driver = { id: user.id, isOnline, currentLat: req.body?.latitude || null, currentLng: req.body?.longitude || null, updatedAt: new Date().toISOString() };
+  serverDb.drivers.set(user.id, { ...(serverDb.drivers.get(user.id) || {}), ...driver });
+  return res.json({ success: true, driver });
+});
+
 app.get('/api/health', (req, res) => {
   const sb = getServerSupabase();
   res.json({
