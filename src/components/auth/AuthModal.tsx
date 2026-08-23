@@ -99,8 +99,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setIsSavingTwilio(true);
     setTwilioConfigSuccess(null);
     try {
-      const updated = await fetchTwilioStatus();
-      setTwilioStatusInfo(updated);
       setTwilioConfigSuccess('Twilio is managed by backend environment configuration.');
       const updated = await fetchTwilioStatus();
       setTwilioStatusInfo(updated);
