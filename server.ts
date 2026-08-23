@@ -63,6 +63,13 @@ function getServerSupabase(): SupabaseClient | null {
   }
 }
 
+const databaseBackedPaths = ['/state','/trips','/drivers','/riders','/pricing','/settings','/sos','/ledger','/sessions','/seed','/mobile/trips','/mobile/driver'];
+app.use('/api', (req, res, next) => {
+  const requiresDatabase = databaseBackedPaths.some(prefix => req.path === prefix || req.path.startsWith(prefix + '/'));
+  if (requiresDatabase && !getServerSupabase()) return res.status(503).json({ error: 'Database unavailable. Configure SUPABASE_URL and a server-side Supabase key.' });
+  next();
+});
+
 function normalizePhoneForTwilio(phone: string): string {
   let cleaned = phone.trim().replace(/[\s\-()]/g, '');
   if (cleaned.startsWith('0')) {
