@@ -865,6 +865,7 @@ app.get('/api/auth/twilio-status', (req, res) => {
 
 // 11c. Twilio Runtime Config Update
 app.post('/api/auth/twilio-config', (req, res) => {
+  return res.status(410).json({ error: 'Twilio credentials are backend-managed. Configure server environment variables.' });
   const { accountSid, authToken, fromNumber } = req.body;
   if (accountSid) runtimeTwilioConfig.accountSid = accountSid.trim();
   if (authToken) runtimeTwilioConfig.authToken = authToken.trim();
@@ -881,13 +882,13 @@ app.post('/api/auth/twilio-config', (req, res) => {
 
 // 11d. Direct Twilio Test SMS Endpoint
 app.post('/api/auth/test-sms', async (req, res) => {
-  const { phone, message, twilioConfig } = req.body;
+  const { phone, message } = req.body;
   if (!phone) {
     return res.status(400).json({ error: 'Target phone number is required' });
   }
 
   const normalizedPhone = normalizePhoneForTwilio(phone);
-  const cfg = twilioConfig || {};
+  const cfg = {};
   const sid = (cfg.accountSid || runtimeTwilioConfig.accountSid || process.env.TWILIO_ACCOUNT_SID || '').trim();
   const token = (cfg.authToken || runtimeTwilioConfig.authToken || process.env.TWILIO_AUTH_TOKEN || '').trim();
   const from = (cfg.fromNumber || runtimeTwilioConfig.fromNumber || process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_MESSAGING_SERVICE_SID || '').trim();
