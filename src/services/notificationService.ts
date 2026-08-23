@@ -252,29 +252,17 @@ export async function sendDirectTestSms(params: {
 export async function requestSmsOtp(
   phone: string,
   role?: 'driver' | 'rider',
-  twilioConfig?: { accountSid?: string; authToken?: string; fromNumber?: string }
 ): Promise<OtpResponse> {
   try {
     const res = await fetch('/api/auth/send-otp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, role, twilioConfig })
+      body: JSON.stringify({ phone, role })
     });
     return await res.json();
   } catch (err: any) {
     console.warn('Network error requesting OTP:', err);
-    const fallbackCode = Math.floor(100000 + Math.random() * 900000).toString();
-    clientOtpStore[phone] = { code: fallbackCode, expiresAt: Date.now() + 5 * 60 * 1000 };
-    return {
-      success: false,
-      calledTwilio: false,
-      message: `Network error connecting to OTP backend for ${phone}`,
-      isSimulated: true,
-      code: fallbackCode,
-      dispatchedMessage: `Your RideZW security verification code is: ${fallbackCode}. Valid for 5 minutes. Do not share this code with anyone.`,
-      targetPhone: phone,
-      twilioStatus: 'client_fallback'
-    };
+    return { success: false, calledTwilio: false, message: 'Unable to reach the authentication backend. Please try again.', error: err?.message || 'OTP backend unavailable' };
   }
 }
 
@@ -288,15 +276,6 @@ export async function verifySmsOtp(phone: string, code: string, role?: 'driver' 
     return await res.json();
   } catch (err: any) {
     console.warn('Network error verifying OTP:', err);
-    const clientEntry = clientOtpStore[phone];
-    if (clientEntry && clientEntry.code === code.trim() && Date.now() < clientEntry.expiresAt) {
-      delete clientOtpStore[phone];
-      return { success: true, message: 'Verified via dynamic secure code' };
-    }
-    // Allow master test code
-    if (code === '123456') {
-      return { success: true, message: 'Verified via master test code' };
-    }
     return { success: false, error: 'Verification network error. Please try again.' };
   }
 }
