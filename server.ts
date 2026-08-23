@@ -147,6 +147,16 @@ async function requireMobileUser(req: any, res: any): Promise<any | null> {
   return data.user;
 }
 
+app.post('/api/auth/admin-login', async (req, res) => {
+  const { email, password } = req.body || {};
+  const sb = getServerSupabase();
+  if (!sb) return res.status(503).json({ error: 'Authentication service is not configured' });
+  if (!email || !password) return res.status(400).json({ error: 'email and password are required' });
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  if (error || !data.user || data.user.user_metadata?.role !== 'admin') return res.status(401).json({ error: 'Invalid administrator credentials' });
+  return res.json({ user: data.user, session: data.session });
+});
+
 app.post('/api/mobile/auth/signup', async (req, res) => {
   const { email, password, role = 'rider', name, phone } = req.body || {};
   if (!email || !password || !['rider', 'driver'].includes(role)) return res.status(400).json({ error: 'email, password, and a valid role are required' });
