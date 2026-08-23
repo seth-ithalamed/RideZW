@@ -270,6 +270,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           setIsSubmitting(false);
           return;
         }
+        const adminAuth = await fetch('/api/auth/admin-login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: signInIdentifier.trim(), password: signInPassword }) });
+        if (!adminAuth.ok) { const detail = await adminAuth.json().catch(() => ({})); throw new Error(detail.error || 'Invalid administrator credentials'); }
         store.loginAsAdmin(signInIdentifier, signInPassword);
         setIsSubmitting(false);
         onClose();
