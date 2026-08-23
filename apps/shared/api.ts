@@ -1,14 +1,5 @@
-const API_URL = (process.env.EXPO_PUBLIC_API_URL || '').replace(/\/$/, '');
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  if (!API_URL) throw new Error('Set EXPO_PUBLIC_API_URL to the RideZW backend URL.');
-  const response = await fetch(API_URL + path, { ...options, headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body?.error?.message || body?.message || 'RideZW API request failed');
-  return body;
-}
-export const ridezwApi = {
-  health: () => request<{ status: string; databaseConnected?: boolean }>('/api/health'),
-  state: () => request<Record<string, unknown>>('/api/state'),
-  createTrip: (trip: Record<string, unknown>) => request('/api/trips', { method: 'POST', body: JSON.stringify(trip) }),
-  updateDriver: (driver: Record<string, unknown>) => request('/api/drivers', { method: 'POST', body: JSON.stringify(driver) }),
-};
+import * as SecureStore from 'expo-secure-store';
+const API_URL=(process.env.EXPO_PUBLIC_API_URL||'').replace(/\/$/,'');
+const ACCESS='ridezw_access_token';const REFRESH='ridezw_refresh_token';
+async function request<T>(path:string,options:RequestInit={}):Promise<T>{if(!API_URL)throw new Error('Set EXPO_PUBLIC_API_URL to the RideZW backend URL.');const token=await SecureStore.getItemAsync(ACCESS);const response=await fetch(API_URL+path,{...options,headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{}),...(options.headers||{})}});const body=await response.json().catch(()=>({}));if(!response.ok)throw new Error(body?.error?.message||body?.error||body?.message||'RideZW API request failed');return body;}
+export const ridezwApi={health:()=>request<{status:string;databaseConnected?:boolean}>('/api/health'),state:()=>request<Record<string,unknown>>('/api/state'),signIn:async(email:string,password:string)=>{const r=await request<any>('/api/mobile/auth/signin',{method:'POST',body:JSON.stringify({email,password})});await SecureStore.setItemAsync(ACCESS,r.session.access_token);await SecureStore.setItemAsync(REFRESH,r.session.refresh_token);return r.user;},signUp:async(email:string,password:string,role:'rider'|'driver',name:string)=>{const r=await request<any>('/api/mobile/auth/signup',{method:'POST',body:JSON.stringify({email,password,role,name})});if(r.session){await SecureStore.setItemAsync(ACCESS,r.session.access_token);await SecureStore.setItemAsync(REFRESH,r.session.refresh_token)}return r.user;},me:()=>request<any>('/api/mobile/auth/me'),signOut:async()=>{await SecureStore.deleteItemAsync(ACCESS);await SecureStore.deleteItemAsync(REFRESH)},createTrip:(trip:Record<string,unknown>)=>request('/api/mobile/trips',{method:'POST',body:JSON.stringify(trip)}),setDriverAvailability:(isOnline:boolean,latitude?:number,longitude?:number)=>request('/api/mobile/driver/availability',{method:'POST',body:JSON.stringify({isOnline,latitude,longitude})})};
