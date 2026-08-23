@@ -81,9 +81,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     fromNumber: string | null;
     source: string;
   } | null>(null);
-  const [customAccountSid, setCustomAccountSid] = useState(() => localStorage.getItem('ridezw_twilio_sid') || '');
-  const [customAuthToken, setCustomAuthToken] = useState(() => localStorage.getItem('ridezw_twilio_token') || '');
-  const [customFromNumber, setCustomFromNumber] = useState(() => localStorage.getItem('ridezw_twilio_from') || '');
+  const [customAccountSid, setCustomAccountSid] = useState('');
+  const [customAuthToken, setCustomAuthToken] = useState('');
+  const [customFromNumber, setCustomFromNumber] = useState('');
   const [isSavingTwilio, setIsSavingTwilio] = useState(false);
   const [isTestingTwilio, setIsTestingTwilio] = useState(false);
   const [twilioConfigSuccess, setTwilioConfigSuccess] = useState<string | null>(null);
@@ -99,16 +99,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setIsSavingTwilio(true);
     setTwilioConfigSuccess(null);
     try {
-      if (customAccountSid) localStorage.setItem('ridezw_twilio_sid', customAccountSid.trim());
-      if (customAuthToken) localStorage.setItem('ridezw_twilio_token', customAuthToken.trim());
-      if (customFromNumber) localStorage.setItem('ridezw_twilio_from', customFromNumber.trim());
-
-      const res = await updateServerTwilioConfig({
-        accountSid: customAccountSid.trim(),
-        authToken: customAuthToken.trim(),
-        fromNumber: customFromNumber.trim()
-      });
-      setTwilioConfigSuccess('Twilio runtime credentials updated successfully!');
+      const updated = await fetchTwilioStatus();
+      setTwilioStatusInfo(updated);
+      setTwilioConfigSuccess('Twilio is managed by backend environment configuration.');
       const updated = await fetchTwilioStatus();
       setTwilioStatusInfo(updated);
       setTimeout(() => setTwilioConfigSuccess(null), 3000);
@@ -130,11 +123,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       const res = await sendDirectTestSms({
         phone: signInIdentifier.trim(),
         message: `RideZW Twilio Test Message sent at ${new Date().toLocaleTimeString()}`,
-        twilioConfig: customAccountSid ? {
-          accountSid: customAccountSid.trim(),
-          authToken: customAuthToken.trim(),
-          fromNumber: customFromNumber.trim()
-        } : undefined
       });
 
       if (res.success) {
@@ -1005,7 +993,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       setMode('signin');
                       setSelectedRole('admin');
                       setSignInIdentifier('seth.bbd@gmail.com');
-                      setSignInPassword('GENESIS-ZW-2026-ROOT-KEY');
+                      setSignInPassword('');
                     }}
                     className="w-full py-2.5 rounded-lg bg-sky-950 hover:bg-sky-900 text-amber-400 font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-xs"
                   >
