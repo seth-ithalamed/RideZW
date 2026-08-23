@@ -201,6 +201,56 @@ app.post('/api/mobile/driver/availability', async (req, res) => {
   return res.json({ success: true, driver });
 });
 
+
+
+// Authenticated ride lifecycle: clients request transitions; the server validates them.
+const tripTransitions: Record<string, { rider?: string[]; driver?: string[] }> = {
+  negotiating: { rider: ['cancelled'], driver: ['driver_accepted'] },
+  driver_accepted: { rider: ['rider_confirmed', 'cancelled'], driver: ['rider_confirmed', 'cancelled'] },
+  rider_confirmed: { rider: ['cancelled'], driver: ['driver_arriving', 'cancelled'] },
+  driver_arriving: { rider: ['cancelled'], driver: ['arrived', 'cancelled'] },
+  arrived: { rider: ['cancelled'], driver: ['in_progress', 'cancelled'] },
+  in_progress: { rider: ['cancelled'], driver: ['completed', 'cancelled'] },
+};
+function mobileRole(user: any): 'rider' | 'driver' | null { const role=user?.user_metadata?.role; return role==='rider'||role==='driver'?role:null; }
+function findMobileTrip(id: string): any { return serverDb.trips.get(id); }
+
+app.get('/api/mobile/trips/active', async (req, res) => {
+  const user = await requireMobileUser(req, res); if (!user) return;
+  const role = mobileRole(user); if (!role) return res.status(403).json({ error: 'Rider or driver role required' });
+  const trips = Array.from(serverDb.trips.values()).filter((trip: any) => {
+    if (role === 'rider') return trip.riderId === user.id && !['completed','cancelled'].includes(trip.status);
+    return trip.driverId === user.id && !['completed','cancelled'].includes(trip.status) || ['negotiating','rider_confirmed'].includes(trip.status);
+  });
+  return res.json({ trips });
+});
+
+app.post('/api/mobile/trips/:id/offers', async (req, res) => {
+  const user = await requireMobileUser(req, res); if (!user) return;
+  if (mobileRole(user) !== 'driver') return res.status(403).json({ error: 'Driver role required' });
+  const trip = findMobileTrip(req.params.id); if (!trip) return res.status(404).json({ error: 'Trip not found' });
+  if (trip.status !== 'negotiating') return res.status(409).json({ error: 'Trip is no longer accepting offers' });
+  const amount = Number(req.body?.offeredAmount); if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'A positive offeredAmount is required' });
+  trip.offers = Array.isArray(trip.offers) ? trip.offers : [];
+  const offer = { id: 'off_' + Date.now().toString(36), tripId: trip.id, driverId: user.id, offeredAmount: amount, status: 'pending', createdAt: new Date().toISOString() };
+  trip.offers.push(offer); serverDb.trips.set(trip.id, { ...trip, updated_at: new Date().toISOString() });
+  return res.status(201).json({ offer });
+});
+
+app.patch('/api/mobile/trips/:id/status', async (req, res) => {
+  const user = await requireMobileUser(req, res); if (!user) return;
+  const role = mobileRole(user); if (!role) return res.status(403).json({ error: 'Rider or driver role required' });
+  const trip = findMobileTrip(req.params.id); if (!trip) return res.status(404).json({ error: 'Trip not found' });
+  if (role === 'rider' && trip.riderId !== user.id) return res.status(403).json({ error: 'Trip does not belong to rider' });
+  if (role === 'driver' && trip.driverId && trip.driverId !== user.id && req.body?.status !== 'driver_accepted') return res.status(403).json({ error: 'Trip is assigned to another driver' });
+  const next = String(req.body?.status || ''); const allowed = tripTransitions[trip.status]?.[role] || [];
+  if (!allowed.includes(next)) return res.status(409).json({ error: 'Invalid trip transition', from: trip.status, to: next, role });
+  if (next === 'driver_accepted') trip.driverId = user.id;
+  trip.status = next; if (next === 'in_progress') trip.startedAt = new Date().toISOString(); if (next === 'completed') trip.completedAt = new Date().toISOString(); if (next === 'cancelled') { trip.cancelledAt = new Date().toISOString(); trip.cancellationReason = req.body?.reason || 'Cancelled by user'; }
+  serverDb.trips.set(trip.id, { ...trip, updated_at: new Date().toISOString() });
+  return res.json({ success: true, trip });
+});
+
 app.get('/api/health', (req, res) => {
   const sb = getServerSupabase();
   res.json({
