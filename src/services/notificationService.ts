@@ -13,7 +13,8 @@
 export interface OtpResponse {
   success: boolean;
   message: string;
-  isSimulated: boolean;
+  isSimulated?: boolean;
+  calledTwilio?: boolean;
   code?: string;
   dispatchedMessage?: string;
   targetPhone?: string;
@@ -21,7 +22,39 @@ export interface OtpResponse {
   twilioStatus?: string;
   twilioFrom?: string;
   twilioError?: string;
+  twilioRequestPayload?: {
+    to: string;
+    from: string;
+    body: string;
+    accountSidMasked?: string | null;
+  };
+  rawTwilioResponse?: {
+    sid: string;
+    status: string;
+    to: string;
+    from: string;
+    body: string;
+    dateCreated?: string;
+    dateSent?: string;
+    direction?: string;
+    price?: string | null;
+    priceUnit?: string | null;
+    errorCode?: number | null;
+    errorMessage?: string | null;
+    uri?: string;
+  };
+  rawTwilioError?: {
+    httpStatus: number;
+    twilioErrorCode?: number | null;
+    message: string;
+    moreInfo?: string;
+    details?: any;
+  };
   missingConfig?: string[];
+  userFoundInDb?: boolean;
+  dbAccountType?: 'driver' | 'rider';
+  registeredName?: string;
+  dbRecordId?: string;
   error?: string;
 }
 
@@ -166,39 +199,105 @@ export function isPWAInstallable(): boolean {
   return !!deferredPrompt;
 }
 
-export async function requestSmsOtp(phone: string): Promise<OtpResponse> {
+// Fallback in-memory OTP store for offline resilience
+const clientOtpStore: Record<string, { code: string; expiresAt: number }> = {};
+
+export async function fetchTwilioStatus(): Promise<{
+  isConfigured: boolean;
+  accountSidMasked: string | null;
+  hasAuthToken: boolean;
+  fromNumber: string | null;
+  source: string;
+}> {
   try {
-    const res = await fetch('/api/auth/send-otp', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone })
-    });
+    const res = await fetch('/api/auth/twilio-status');
     return await res.json();
-  } catch (err: any) {
-    console.warn('Network error requesting OTP:', err);
+  } catch (e) {
     return {
-      success: true,
-      message: 'Verification code dispatched to your phone number.',
-      isSimulated: true
+      isConfigured: false,
+      accountSidMasked: null,
+      hasAuthToken: false,
+      fromNumber: null,
+      source: 'offline'
     };
   }
 }
 
-export async function verifySmsOtp(phone: string, code: string): Promise<{ success: boolean; message?: string; error?: string }> {
+export async function updateServerTwilioConfig(config: {
+  accountSid?: string;
+  authToken?: string;
+  fromNumber?: string;
+}): Promise<any> {
+  const res = await fetch('/api/auth/twilio-config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config)
+  });
+  return await res.json();
+}
+
+export async function sendDirectTestSms(params: {
+  phone: string;
+  message?: string;
+  twilioConfig?: { accountSid?: string; authToken?: string; fromNumber?: string };
+}): Promise<any> {
+  const res = await fetch('/api/auth/test-sms', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params)
+  });
+  return await res.json();
+}
+
+export async function requestSmsOtp(
+  phone: string,
+  role?: 'driver' | 'rider',
+  twilioConfig?: { accountSid?: string; authToken?: string; fromNumber?: string }
+): Promise<OtpResponse> {
+  try {
+    const res = await fetch('/api/auth/send-otp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone, role, twilioConfig })
+    });
+    return await res.json();
+  } catch (err: any) {
+    console.warn('Network error requesting OTP:', err);
+    const fallbackCode = Math.floor(100000 + Math.random() * 900000).toString();
+    clientOtpStore[phone] = { code: fallbackCode, expiresAt: Date.now() + 5 * 60 * 1000 };
+    return {
+      success: false,
+      calledTwilio: false,
+      message: `Network error connecting to OTP backend for ${phone}`,
+      isSimulated: true,
+      code: fallbackCode,
+      dispatchedMessage: `Your RideZW security verification code is: ${fallbackCode}. Valid for 5 minutes. Do not share this code with anyone.`,
+      targetPhone: phone,
+      twilioStatus: 'client_fallback'
+    };
+  }
+}
+
+export async function verifySmsOtp(phone: string, code: string, role?: 'driver' | 'rider'): Promise<{ success: boolean; message?: string; error?: string; userProfile?: any }> {
   try {
     const res = await fetch('/api/auth/verify-otp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, code })
+      body: JSON.stringify({ phone, code, role })
     });
     return await res.json();
   } catch (err: any) {
     console.warn('Network error verifying OTP:', err);
+    const clientEntry = clientOtpStore[phone];
+    if (clientEntry && clientEntry.code === code.trim() && Date.now() < clientEntry.expiresAt) {
+      delete clientOtpStore[phone];
+      return { success: true, message: 'Verified via dynamic secure code' };
+    }
     // Allow master test code
     if (code === '123456') {
       return { success: true, message: 'Verified via master test code' };
     }
-    return { success: false, error: 'Verification network error' };
+    return { success: false, error: 'Verification network error. Please try again.' };
   }
 }
 

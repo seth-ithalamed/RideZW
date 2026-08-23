@@ -19,12 +19,26 @@ import {
   Sparkles,
   Radio,
   Copy,
-  Check
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Terminal,
+  Send,
+  Settings,
+  AlertTriangle,
+  ExternalLink
 } from 'lucide-react';
 import { store } from '../../services/store';
 import { CoverageCity } from '../../types';
 import { RideZWLogo } from '../common/RideZWLogo';
-import { requestSmsOtp, verifySmsOtp, OtpResponse } from '../../services/notificationService';
+import {
+  requestSmsOtp,
+  verifySmsOtp,
+  OtpResponse,
+  fetchTwilioStatus,
+  updateServerTwilioConfig,
+  sendDirectTestSms
+} from '../../services/notificationService';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -56,6 +70,106 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [authError, setAuthError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // Twilio Gateway Live Diagnostics & Raw API State
+  const [showTwilioInspector, setShowTwilioInspector] = useState(false);
+  const [showTwilioSettings, setShowTwilioSettings] = useState(false);
+  const [twilioStatusInfo, setTwilioStatusInfo] = useState<{
+    isConfigured: boolean;
+    accountSidMasked: string | null;
+    hasAuthToken: boolean;
+    fromNumber: string | null;
+    source: string;
+  } | null>(null);
+  const [customAccountSid, setCustomAccountSid] = useState(() => localStorage.getItem('ridezw_twilio_sid') || '');
+  const [customAuthToken, setCustomAuthToken] = useState(() => localStorage.getItem('ridezw_twilio_token') || '');
+  const [customFromNumber, setCustomFromNumber] = useState(() => localStorage.getItem('ridezw_twilio_from') || '');
+  const [isSavingTwilio, setIsSavingTwilio] = useState(false);
+  const [isTestingTwilio, setIsTestingTwilio] = useState(false);
+  const [twilioConfigSuccess, setTwilioConfigSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchTwilioStatus().then(setTwilioStatusInfo);
+    }
+  }, [isOpen]);
+
+  const handleSaveTwilioConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingTwilio(true);
+    setTwilioConfigSuccess(null);
+    try {
+      if (customAccountSid) localStorage.setItem('ridezw_twilio_sid', customAccountSid.trim());
+      if (customAuthToken) localStorage.setItem('ridezw_twilio_token', customAuthToken.trim());
+      if (customFromNumber) localStorage.setItem('ridezw_twilio_from', customFromNumber.trim());
+
+      const res = await updateServerTwilioConfig({
+        accountSid: customAccountSid.trim(),
+        authToken: customAuthToken.trim(),
+        fromNumber: customFromNumber.trim()
+      });
+      setTwilioConfigSuccess('Twilio runtime credentials updated successfully!');
+      const updated = await fetchTwilioStatus();
+      setTwilioStatusInfo(updated);
+      setTimeout(() => setTwilioConfigSuccess(null), 3000);
+    } catch (e: any) {
+      setAuthError(e.message || 'Failed to update Twilio credentials');
+    } finally {
+      setIsSavingTwilio(false);
+    }
+  };
+
+  const handleSendDirectTest = async () => {
+    if (!signInIdentifier.trim()) {
+      setAuthError('Please enter a target phone number.');
+      return;
+    }
+    setIsTestingTwilio(true);
+    setAuthError('');
+    try {
+      const res = await sendDirectTestSms({
+        phone: signInIdentifier.trim(),
+        message: `RideZW Twilio Test Message sent at ${new Date().toLocaleTimeString()}`,
+        twilioConfig: customAccountSid ? {
+          accountSid: customAccountSid.trim(),
+          authToken: customAuthToken.trim(),
+          fromNumber: customFromNumber.trim()
+        } : undefined
+      });
+
+      if (res.success) {
+        setSuccessMessage(`Twilio real test SMS sent! SID: ${res.rawTwilioResponse?.sid}`);
+        setOtpDetails((prev) => ({
+          success: true,
+          message: 'Direct test SMS dispatched',
+          calledTwilio: true,
+          isSimulated: false,
+          twilioSid: res.rawTwilioResponse?.sid,
+          twilioStatus: res.rawTwilioResponse?.status,
+          targetPhone: signInIdentifier.trim(),
+          rawTwilioResponse: res.rawTwilioResponse,
+          code: prev?.code || '123456',
+          dispatchedMessage: res.rawTwilioResponse?.body || 'Test SMS dispatched'
+        }));
+      } else {
+        setAuthError(res.rawTwilioError?.message || res.error || 'Twilio test SMS failed');
+        setOtpDetails((prev) => ({
+          success: false,
+          message: 'Twilio test SMS call failed',
+          calledTwilio: true,
+          isSimulated: false,
+          twilioError: res.rawTwilioError?.message,
+          rawTwilioError: res.rawTwilioError,
+          targetPhone: signInIdentifier.trim(),
+          code: prev?.code || '123456'
+        }));
+      }
+    } catch (e: any) {
+      setAuthError(e.message || 'Test SMS dispatch failed');
+    } finally {
+      setIsTestingTwilio(false);
+    }
+  };
 
   // Coverage Cities dynamically from Database / Store
   const [coverageCities, setCoverageCities] = useState<CoverageCity[]>(() => store.getState().coverageCities || []);
@@ -110,15 +224,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setAuthError('');
     setSuccessMessage(null);
     try {
-      const res = await requestSmsOtp(signInIdentifier.trim());
+      const roleParam = selectedRole === 'driver' ? 'driver' : 'rider';
+      const res = await requestSmsOtp(
+        signInIdentifier.trim(),
+        roleParam,
+        customAccountSid ? {
+          accountSid: customAccountSid.trim(),
+          authToken: customAuthToken.trim(),
+          fromNumber: customFromNumber.trim()
+        } : undefined
+      );
       setOtpDetails(res);
       setOtpSent(true);
-      if (res.code) {
-        // Auto-populate for convenient testing if requested
-      }
-      setSuccessMessage(`SMS request processed for ${res.targetPhone || signInIdentifier.trim()}`);
-      if (res.twilioError) {
-        setAuthError(res.twilioError);
+      
+      const dbStatusText = res.userFoundInDb 
+        ? `• DB Profile: ${res.registeredName || 'Registered'} (${res.dbAccountType || roleParam})`
+        : `• DB Profile: New ${roleParam}`;
+
+      if (res.calledTwilio && res.twilioSid) {
+        setSuccessMessage(`Twilio API invoked successfully! SMS queued (SID: ${res.twilioSid}). ${dbStatusText}`);
+      } else if (res.calledTwilio && res.twilioError) {
+        setAuthError(`Twilio API responded with error: ${res.twilioError}`);
+      } else if (!res.calledTwilio) {
+        setSuccessMessage(`OTP Generated for verification. Note: Twilio API was NOT called because credentials are not set on server. ${dbStatusText}`);
       }
     } catch (err: any) {
       setAuthError(err.message || 'Failed to connect to SMS service.');
@@ -167,7 +295,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
 
-      const verifyRes = await verifySmsOtp(signInIdentifier.trim(), otpCode.trim());
+      const roleParam = selectedRole === 'driver' ? 'driver' : 'rider';
+      const verifyRes = await verifySmsOtp(signInIdentifier.trim(), otpCode.trim(), roleParam);
       if (!verifyRes.success) {
         setAuthError(verifyRes.error || 'Invalid verification code. Please check your SMS and try again.');
         setIsSubmitting(false);
@@ -453,54 +582,323 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                         }`}
                       />
                     </div>
+
+                    {/* Pre-Send Twilio Gateway Status & Config Trigger */}
+                    {!otpSent && (
+                      <div className="mt-1.5 flex items-center justify-between text-[10px]">
+                        <div className="flex items-center gap-1.5 text-slate-500">
+                          <span className={`w-2 h-2 rounded-full ${twilioStatusInfo?.isConfigured ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+                          <span>
+                            {twilioStatusInfo?.isConfigured
+                              ? `Twilio Gateway Ready (${twilioStatusInfo.accountSidMasked})`
+                              : 'Twilio Keys: Not Set on Server'}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowTwilioSettings(!showTwilioSettings)}
+                          className="text-sky-700 hover:text-sky-900 font-bold flex items-center gap-1"
+                        >
+                          <Settings className="w-2.5 h-2.5" />
+                          <span>{showTwilioSettings ? 'Close Config' : 'Twilio Settings'}</span>
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Twilio Settings Drawer when not sent */}
+                    {!otpSent && showTwilioSettings && (
+                      <form onSubmit={handleSaveTwilioConfig} className="mt-2 bg-slate-900 text-slate-100 rounded-lg p-3 border border-slate-700 space-y-2 text-xs animate-in fade-in">
+                        <div className="flex items-center justify-between pb-1 border-b border-slate-800">
+                          <span className="font-bold text-amber-300">Live Twilio Gateway Credentials</span>
+                          <span className="text-[10px] text-slate-400">Runtime Process</span>
+                        </div>
+
+                        {twilioConfigSuccess && (
+                          <div className="p-2 bg-emerald-950/80 border border-emerald-700 text-emerald-300 rounded text-[11px]">
+                            {twilioConfigSuccess}
+                          </div>
+                        )}
+
+                        <div>
+                          <label className="block text-[10px] text-slate-400 font-mono uppercase mb-0.5">Account SID</label>
+                          <input
+                            type="text"
+                            value={customAccountSid}
+                            onChange={(e) => setCustomAccountSid(e.target.value)}
+                            placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                            className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono text-[11px]"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] text-slate-400 font-mono uppercase mb-0.5">Auth Token</label>
+                          <input
+                            type="password"
+                            value={customAuthToken}
+                            onChange={(e) => setCustomAuthToken(e.target.value)}
+                            placeholder="••••••••••••••••••••••••••••••••"
+                            className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono text-[11px]"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] text-slate-400 font-mono uppercase mb-0.5">Twilio Phone Number / Messaging SID</label>
+                          <input
+                            type="text"
+                            value={customFromNumber}
+                            onChange={(e) => setCustomFromNumber(e.target.value)}
+                            placeholder="+14244868730 or MGxxxxxxxxxxxx"
+                            className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono text-[11px]"
+                          />
+                        </div>
+
+                        <div className="pt-2 flex items-center gap-2">
+                          <button
+                            type="submit"
+                            disabled={isSavingTwilio}
+                            className="flex-1 bg-sky-600 hover:bg-sky-500 text-white font-bold py-1.5 px-3 rounded text-[11px] transition-colors"
+                          >
+                            {isSavingTwilio ? 'Saving...' : 'Apply Credentials'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleSendDirectTest}
+                            disabled={isTestingTwilio}
+                            className="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-1.5 px-3 rounded text-[11px] transition-colors flex items-center justify-center gap-1"
+                          >
+                            {isTestingTwilio ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Send className="w-3 h-3" />
+                            )}
+                            <span>Test Live SMS</span>
+                          </button>
+                        </div>
+                      </form>
+                    )}
                   </div>
 
                   {/* OTP Code Entry Section (Appears after code is sent) */}
                   {otpSent && (
                     <div className="space-y-3 pt-1 animate-in fade-in slide-in-from-top-2">
-                      {/* Live Backend Message Payload Display */}
+                      {/* Live Backend Message Payload & Twilio Gateway Inspector */}
                       <div className="bg-slate-900 border border-slate-700 rounded-xl p-3 text-slate-100 shadow-md">
                         <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2">
                           <div className="flex items-center gap-1.5 text-[11px] font-bold text-amber-400">
                             <MessageSquare className="w-3.5 h-3.5" />
-                            <span>Backend SMS Message Payload</span>
+                            <span>Twilio Gateway & SMS Dispatch</span>
                           </div>
-                          <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
-                            otpDetails?.twilioSid 
-                              ? 'bg-emerald-950 text-emerald-300 border border-emerald-700' 
-                              : otpDetails?.twilioError 
-                              ? 'bg-rose-950 text-rose-300 border border-rose-700'
-                              : 'bg-sky-950 text-sky-300 border border-sky-700'
-                          }`}>
-                            {otpDetails?.twilioSid 
-                              ? `Twilio (${otpDetails.twilioStatus || 'sent'})` 
-                              : otpDetails?.twilioError 
-                              ? 'Twilio Err / Test Mode' 
-                              : 'Test / Local'}
-                          </span>
+                          <div className="flex items-center gap-1">
+                            {otpDetails?.userFoundInDb ? (
+                              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded font-bold uppercase tracking-wider bg-emerald-950 text-emerald-300 border border-emerald-700">
+                                DB: {otpDetails.registeredName || 'Verified'}
+                              </span>
+                            ) : (
+                              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded font-bold uppercase tracking-wider bg-sky-950 text-sky-300 border border-sky-700">
+                                DB: New {selectedRole}
+                              </span>
+                            )}
+                            <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
+                              otpDetails?.calledTwilio && otpDetails?.twilioSid 
+                                ? 'bg-emerald-950 text-emerald-300 border border-emerald-700' 
+                                : otpDetails?.calledTwilio && (otpDetails?.rawTwilioError || otpDetails?.twilioError)
+                                ? 'bg-rose-950 text-rose-300 border border-rose-700'
+                                : 'bg-amber-950 text-amber-300 border border-amber-700'
+                            }`}>
+                              {otpDetails?.calledTwilio && otpDetails?.twilioSid 
+                                ? `Twilio: ${otpDetails.twilioStatus || 'sent'}` 
+                                : otpDetails?.calledTwilio && (otpDetails?.rawTwilioError || otpDetails?.twilioError)
+                                ? 'Twilio: Rejected / Error' 
+                                : 'Twilio: Not Configured'}
+                            </span>
+                          </div>
                         </div>
 
                         {/* Exact Message Sent */}
-                        <div className="bg-slate-950/80 rounded-lg p-2 border border-slate-800 font-mono text-[11px] text-slate-300 leading-relaxed">
-                          <p className="text-[10px] text-slate-500 font-sans uppercase font-bold tracking-tight mb-1 flex items-center justify-between">
+                        <div className="bg-slate-950/80 rounded-lg p-2.5 border border-slate-800 font-mono text-[11px] text-slate-300 leading-relaxed">
+                          <div className="text-[10px] text-slate-400 font-sans uppercase font-bold tracking-tight mb-1.5 flex items-center justify-between">
                             <span>To: {otpDetails?.targetPhone || signInIdentifier}</span>
                             {otpDetails?.twilioSid && (
-                              <span className="text-[9px] text-emerald-400">SID: {otpDetails.twilioSid.slice(0, 10)}...</span>
+                              <span className="text-[9px] text-emerald-400 font-mono">SID: {otpDetails.twilioSid.slice(0, 14)}...</span>
                             )}
-                          </p>
-                          <p className="text-amber-300 font-sans bg-slate-900/90 p-2 rounded border border-slate-800">
-                            "{otpDetails?.dispatchedMessage || `Your RideZW security verification code is: ${otpDetails?.code || '123456'}. Valid for 5 minutes. Do not share this code with anyone.`}"
+                          </div>
+                          <p className="text-amber-300 font-sans bg-slate-900/90 p-2.5 rounded-lg border border-slate-800 text-xs">
+                            "{otpDetails?.dispatchedMessage || `Your RideZW security verification code is: ${otpDetails?.code}. Valid for 5 minutes. Do not share this code with anyone.`}"
                           </p>
                         </div>
 
-                        {/* Quick Auto-Fill Action */}
-                        {otpDetails?.code && (
-                          <div className="mt-2.5 flex items-center justify-between bg-amber-400/10 border border-amber-400/30 rounded-lg p-2">
-                            <div className="flex items-center gap-1.5">
-                              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                              <span className="text-[11px] font-bold text-amber-200">
-                                Code: <span className="font-mono text-white text-xs bg-slate-900 px-1.5 py-0.5 rounded border border-amber-400/50">{otpDetails.code}</span>
+                        {/* Raw Twilio Response & Inspector Toggle */}
+                        <div className="mt-2 pt-2 border-t border-slate-800 flex items-center justify-between text-[11px]">
+                          <button
+                            type="button"
+                            onClick={() => setShowTwilioInspector(!showTwilioInspector)}
+                            className="text-sky-400 hover:text-sky-300 flex items-center gap-1 font-semibold transition-colors"
+                          >
+                            <Terminal className="w-3 h-3" />
+                            <span>{showTwilioInspector ? 'Hide Twilio Raw JSON' : 'Inspect Twilio Raw API Response'}</span>
+                            {showTwilioInspector ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setShowTwilioSettings(!showTwilioSettings)}
+                            className="text-slate-400 hover:text-slate-200 flex items-center gap-1 transition-colors"
+                          >
+                            <Settings className="w-3 h-3" />
+                            <span>Gateway Config</span>
+                          </button>
+                        </div>
+
+                        {/* Raw Twilio Payload & Response Box */}
+                        {showTwilioInspector && (
+                          <div className="mt-2.5 bg-black/90 rounded-lg p-2.5 border border-slate-800 font-mono text-[10px] space-y-2 text-slate-300 animate-in fade-in">
+                            <div className="flex items-center justify-between text-slate-400 pb-1 border-b border-slate-800">
+                              <span className="font-bold uppercase text-[9px] text-slate-400">Twilio Telemetry & Raw Payload</span>
+                              <span className="text-[9px]">
+                                {otpDetails?.calledTwilio ? (
+                                  <span className="text-emerald-400">API Call Executed</span>
+                                ) : (
+                                  <span className="text-amber-400">API Call Skipped (No Server Keys)</span>
+                                )}
                               </span>
+                            </div>
+
+                            {/* Raw Twilio Response (if returned) */}
+                            {otpDetails?.rawTwilioResponse && (
+                              <div>
+                                <p className="text-emerald-400 font-bold mb-1">Twilio API 200/201 Response:</p>
+                                <pre className="bg-slate-950 p-2 rounded border border-emerald-900/50 text-emerald-300 overflow-x-auto text-[10px] leading-tight">
+                                  {JSON.stringify(otpDetails.rawTwilioResponse, null, 2)}
+                                </pre>
+                              </div>
+                            )}
+
+                            {/* Raw Twilio Error (if returned) */}
+                            {otpDetails?.rawTwilioError && (
+                              <div>
+                                <p className="text-rose-400 font-bold mb-1">Twilio API Error Response:</p>
+                                <pre className="bg-slate-950 p-2 rounded border border-rose-900/50 text-rose-300 overflow-x-auto text-[10px] leading-tight">
+                                  {JSON.stringify(otpDetails.rawTwilioError, null, 2)}
+                                </pre>
+                                {otpDetails.rawTwilioError.moreInfo && (
+                                  <a 
+                                    href={otpDetails.rawTwilioError.moreInfo} 
+                                    target="_blank" 
+                                    rel="noreferrer"
+                                    className="text-[10px] text-sky-400 hover:underline flex items-center gap-1 mt-1"
+                                  >
+                                    <span>Twilio Docs for Error {otpDetails.rawTwilioError.twilioErrorCode}</span>
+                                    <ExternalLink className="w-2.5 h-2.5" />
+                                  </a>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Request sent to Twilio */}
+                            {otpDetails?.twilioRequestPayload && (
+                              <div>
+                                <p className="text-slate-400 font-bold mb-1">Request Dispatched To Twilio:</p>
+                                <pre className="bg-slate-950 p-2 rounded border border-slate-800 text-slate-300 overflow-x-auto text-[10px] leading-tight">
+                                  {JSON.stringify(otpDetails.twilioRequestPayload, null, 2)}
+                                </pre>
+                              </div>
+                            )}
+
+                            {/* Reason if Twilio was not called */}
+                            {!otpDetails?.calledTwilio && (
+                              <div className="bg-amber-950/40 p-2 rounded border border-amber-800/60 text-amber-200">
+                                <p className="font-bold">Why was Twilio not called?</p>
+                                <p className="mt-0.5 text-[10px] leading-normal">
+                                  {otpDetails?.message || 'Server environment variables TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN are not configured in this container runtime.'}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Twilio Gateway Settings & Direct Test Dispatch */}
+                        {showTwilioSettings && (
+                          <form onSubmit={handleSaveTwilioConfig} className="mt-2.5 bg-slate-950 rounded-lg p-3 border border-slate-800 space-y-2 text-xs animate-in fade-in">
+                            <div className="flex items-center justify-between pb-1 border-b border-slate-800">
+                              <span className="font-bold text-amber-300">Live Twilio Gateway Credentials</span>
+                              <span className="text-[10px] text-slate-400">Runtime Config</span>
+                            </div>
+
+                            {twilioConfigSuccess && (
+                              <div className="p-2 bg-emerald-950/80 border border-emerald-700 text-emerald-300 rounded text-[11px]">
+                                {twilioConfigSuccess}
+                              </div>
+                            )}
+
+                            <div>
+                              <label className="block text-[10px] text-slate-400 font-mono uppercase mb-0.5">Account SID</label>
+                              <input
+                                type="text"
+                                value={customAccountSid}
+                                onChange={(e) => setCustomAccountSid(e.target.value)}
+                                placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                                className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono text-[11px]"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-[10px] text-slate-400 font-mono uppercase mb-0.5">Auth Token</label>
+                              <input
+                                type="password"
+                                value={customAuthToken}
+                                onChange={(e) => setCustomAuthToken(e.target.value)}
+                                placeholder="••••••••••••••••••••••••••••••••"
+                                className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono text-[11px]"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-[10px] text-slate-400 font-mono uppercase mb-0.5">Twilio Phone Number / Messaging SID</label>
+                              <input
+                                type="text"
+                                value={customFromNumber}
+                                onChange={(e) => setCustomFromNumber(e.target.value)}
+                                placeholder="+14244868730 or MGxxxxxxxxxxxx"
+                                className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 font-mono text-[11px]"
+                              />
+                            </div>
+
+                            <div className="pt-2 flex items-center gap-2">
+                              <button
+                                type="submit"
+                                disabled={isSavingTwilio}
+                                className="flex-1 bg-sky-600 hover:bg-sky-500 text-white font-bold py-1.5 px-3 rounded text-[11px] transition-colors"
+                              >
+                                {isSavingTwilio ? 'Saving...' : 'Apply Credentials'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleSendDirectTest}
+                                disabled={isTestingTwilio}
+                                className="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-1.5 px-3 rounded text-[11px] transition-colors flex items-center justify-center gap-1"
+                              >
+                                {isTestingTwilio ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Send className="w-3 h-3" />
+                                )}
+                                <span>Test Live SMS</span>
+                              </button>
+                            </div>
+                          </form>
+                        )}
+
+                        {/* Dynamic Code Action */}
+                        {otpDetails?.code && (
+                          <div className="mt-2.5 flex items-center justify-between bg-amber-400/10 border border-amber-400/30 rounded-lg p-2.5">
+                            <div className="flex items-center gap-2">
+                              <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+                              <div>
+                                <span className="text-[11px] text-amber-200 block">Session Code:</span>
+                                <span className="font-mono text-white text-sm font-bold bg-slate-950 px-2 py-0.5 rounded border border-amber-400/60 tracking-wider">
+                                  {otpDetails.code}
+                                </span>
+                              </div>
                             </div>
                             <button
                               type="button"
@@ -509,9 +907,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                                 setCopiedCode(true);
                                 setTimeout(() => setCopiedCode(false), 2000);
                               }}
-                              className="text-[10px] bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold px-2 py-1 rounded transition-colors flex items-center gap-1 shadow-sm"
+                              className="text-[11px] bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 shadow-sm"
                             >
-                              {copiedCode ? <Check className="w-3 h-3 text-emerald-900" /> : <Copy className="w-3 h-3" />}
+                              {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-950" /> : <Copy className="w-3.5 h-3.5" />}
                               <span>{copiedCode ? 'Auto-Filled!' : 'Auto-Fill Code'}</span>
                             </button>
                           </div>
