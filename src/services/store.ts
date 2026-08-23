@@ -1108,6 +1108,7 @@ class Store {
     }
 
     // Move to history
+    persistTripToBackend(trip).catch(() => {});
     this.state.tripHistory.unshift({ ...trip });
     this.state.activeTrip = null;
     this.saveState();
@@ -1118,6 +1119,7 @@ class Store {
     this.state.activeTrip.status = 'cancelled';
     this.state.activeTrip.cancelledAt = new Date().toISOString();
     this.state.activeTrip.cancellationReason = reason;
+    persistTripToBackend(this.state.activeTrip).catch(() => {});
     this.state.tripHistory.unshift({ ...this.state.activeTrip });
     this.state.activeTrip = null;
     this.saveState();
