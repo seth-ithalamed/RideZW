@@ -372,7 +372,7 @@ app.post('/api/trips', async (req, res) => {
         updated_at: new Date().toISOString()
       });
     } catch (e: any) {
-      console.warn('Trip sync to Supabase skipped:', e.message);
+      return res.status(500).json({ error: 'Trip database persistence failed' }); // Trip sync to Supabase skipped:', e.message);
     }
   }
 
@@ -412,7 +412,7 @@ app.post('/api/drivers', async (req, res) => {
         vehicle_category: driver.vehicle?.category || driver.vehicle_category
       });
     } catch (e: any) {
-      console.warn('Driver sync to Supabase skipped:', e.message);
+      return res.status(500).json({ error: 'Driver database persistence failed' }); // Driver sync to Supabase skipped:', e.message);
     }
   }
 
@@ -443,7 +443,7 @@ app.post('/api/riders', async (req, res) => {
         total_trips: rider.totalTrips || rider.total_trips || 0
       });
     } catch (e: any) {
-      console.warn('Rider sync to Supabase skipped:', e.message);
+      return res.status(500).json({ error: 'Rider database persistence failed' }); // Rider sync to Supabase skipped:', e.message);
     }
   }
 
@@ -533,7 +533,7 @@ app.post('/api/sos', async (req, res) => {
         created_at: sos.timestamp || sos.created_at || new Date().toISOString()
       });
     } catch (e: any) {
-      console.warn('SOS sync to Supabase skipped:', e.message);
+      return res.status(500).json({ error: 'SOS database persistence failed' }); // SOS sync to Supabase skipped:', e.message);
     }
   }
 
@@ -562,7 +562,7 @@ app.post('/api/ledger', async (req, res) => {
         created_at: entry.createdAt || entry.created_at || new Date().toISOString()
       });
     } catch (e: any) {
-      console.warn('Ledger sync to Supabase skipped:', e.message);
+      return res.status(500).json({ error: 'Ledger database persistence failed' }); // Ledger sync to Supabase skipped:', e.message);
     }
   }
 
