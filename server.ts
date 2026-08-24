@@ -268,6 +268,39 @@ app.patch('/api/mobile/trips/:id/status', async (req, res) => {
   return res.json({ success: true, trip });
 });
 
+
+
+// Payment boundary: OpenAPI Africa credentials and fulfillment stay server-side.
+const clicknPayBaseUrl = process.env.CLICKNPAY_API_URL || 'https://backendservices.clicknpay.africa:2081';
+async function persistPaymentTransaction(transaction: any) {
+  const sb = getServerSupabase(); if (!sb) throw new Error('Database unavailable');
+  const { error } = await sb.from('payment_transactions').upsert(transaction, { onConflict: 'client_reference' });
+  if (error) throw error;
+}
+
+app.post('/api/payments/orders', async (req, res) => {
+  const body = req.body || {}; const amount = Number(body.amount);
+  if (!Number.isFinite(amount) || amount <= 0 || !body.customerPhone || !body.description) return res.status(400).json({ error: 'amount, customerPhone, and description are required' });
+  const apiKey = String(process.env.CLICKNPAY_API_KEY || '').trim(); const publicUniqueId = String(process.env.CLICKNPAY_PUBLIC_UNIQUE_ID || process.env.CLICKNPAY_MERCHANT_ID || '').trim();
+  if (!apiKey || !publicUniqueId) return res.status(503).json({ error: 'Payment gateway is not configured on the backend' });
+  const clientReference = String(body.orderReference || 'RIDEZW-' + Date.now().toString(36));
+  const returnUrl = body.returnUrl || process.env.PUBLIC_BASE_URL || '';
+  if (!returnUrl) return res.status(500).json({ error: 'PUBLIC_BASE_URL is required for payment return flow' });
+  const order = { channel: 'AUTOMATED', clientReference, currency: body.currency === 'ZWG' ? 'ZWG' : 'USD', customerCharged: true, customerPhoneNumber: body.customerPhone, customerEmail: body.customerEmail || undefined, description: body.description, multiplePayments: false, orderYpe: 'DYNAMIC', productsList: [{ description: body.description, id: 0, price: amount, productName: body.productName || 'RideZW payment', quantity: 1 }], publicUniqueId, returnUrl };
+  try {
+    const response = await fetch(clicknPayBaseUrl + '/payme/orders', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey, 'X-Merchant-ID': process.env.CLICKNPAY_MERCHANT_ID || publicUniqueId }, body: JSON.stringify(order) });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return res.status(502).json({ error: 'Payment gateway rejected order', gatewayStatus: response.status, details: data });
+    await persistPaymentTransaction({ client_reference: clientReference, purpose: body.purpose || 'ride', related_id: body.relatedId || null, amount, currency: order.currency, status: 'PENDING', gateway_order_id: data.orderId || data.id || null, gateway_payload: data, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+    return res.status(201).json({ success: true, clientReference: data.clientReference || clientReference, paymeURL: data.paymeURL || data.paymentUrl || data.checkoutUrl || data.redirectUrl, status: 'PENDING' });
+  } catch (error: any) { return res.status(502).json({ error: 'Payment gateway unavailable', details: error.message }); }
+});
+
+app.get('/api/payments/orders/:reference/status', async (req, res) => {
+  const apiKey = String(process.env.CLICKNPAY_API_KEY || '').trim(); if (!apiKey) return res.status(503).json({ error: 'Payment gateway is not configured on the backend' });
+  try { const response = await fetch(clicknPayBaseUrl + '/payme/orders/' + encodeURIComponent(req.params.reference) + '/status', { headers: { Authorization: 'Bearer ' + apiKey, 'X-Merchant-ID': process.env.CLICKNPAY_MERCHANT_ID || '' } }); const data = await response.json().catch(() => ({})); if (!response.ok) return res.status(502).json({ error: 'Payment status lookup failed', gatewayStatus: response.status }); const raw=String(data.status||'PENDING').toUpperCase(); const status=raw==='SUCCESS'?'SUCCESS':raw==='FAILED'?'FAILED':'PENDING'; const sb=getServerSupabase(); if(sb) await sb.from('payment_transactions').update({status, gateway_payload:data, updated_at:new Date().toISOString()}).eq('client_reference',req.params.reference); return res.json({ clientReference:req.params.reference, status, isPaid:status==='SUCCESS' }); } catch(error:any){ return res.status(502).json({error:'Payment gateway unavailable',details:error.message}); }
+});
+
 app.get('/api/health', (req, res) => {
   const sb = getServerSupabase();
   res.json({
