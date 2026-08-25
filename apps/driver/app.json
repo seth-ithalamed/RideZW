@@ -5,11 +5,11 @@
     "owner": "chesa-pride",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/appicon.jpg",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "scheme": "ridezw-driver",
     "splash": {
-      "image": "./assets/splash.jpg",
+      "image": "./assets/splash.png",
       "resizeMode": "contain",
       "backgroundColor": "#0f172a"
     },
@@ -23,7 +23,7 @@
     "android": {
       "package": "zw.ridezw.driver",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/appicon.jpg",
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0f172a"
       },
       "permissions": [

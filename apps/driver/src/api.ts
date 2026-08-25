@@ -1,6 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 
-const API_URL = (process.env.EXPO_PUBLIC_API_URL || '').replace(/\/$/, '');
+const API_URL = (process.env.EXPO_PUBLIC_API_URL || 'https://ridezw-platform.onrender.com').replace(/\/$/, '');
 const ACCESS = 'ridezw_access_token';
 const REFRESH = 'ridezw_refresh_token';
 
@@ -124,6 +124,30 @@ export const ridezwApi = {
   state: () => request<Record<string, unknown>>('/api/state'),
   
   // Mobile Authentication
+  sendOtp: async (phone: string, role: 'rider' | 'driver' = 'driver') => {
+    return request<{ success: boolean; message: string; isSimulated?: boolean; code?: string; targetPhone?: string }>(
+      '/api/mobile/auth/send-otp',
+      {
+        method: 'POST',
+        body: JSON.stringify({ phone, role })
+      }
+    );
+  },
+
+  verifyOtp: async (phone: string, code: string, role: 'rider' | 'driver' = 'driver', name?: string) => {
+    const r = await request<any>('/api/mobile/auth/verify-otp', {
+      method: 'POST',
+      body: JSON.stringify({ phone, code, role, name })
+    });
+    if (r.session?.access_token) {
+      await SecureStore.setItemAsync(ACCESS, r.session.access_token);
+      if (r.session?.refresh_token) {
+        await SecureStore.setItemAsync(REFRESH, r.session.refresh_token);
+      }
+    }
+    return r.user;
+  },
+
   signIn: async (email: string, password: string) => {
     const r = await request<any>('/api/mobile/auth/signin', {
       method: 'POST',
