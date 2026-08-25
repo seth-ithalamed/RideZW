@@ -252,12 +252,13 @@ export async function sendDirectTestSms(params: {
 export async function requestSmsOtp(
   phone: string,
   role?: 'driver' | 'rider',
+  twilioConfig?: { accountSid?: string; authToken?: string; fromNumber?: string }
 ): Promise<OtpResponse> {
   try {
     const res = await fetch('/api/auth/send-otp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, role })
+      body: JSON.stringify({ phone, role, ...(twilioConfig ? { twilioConfig } : {}) })
     });
     return await res.json();
   } catch (err: any) {

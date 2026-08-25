@@ -586,7 +586,7 @@ class Store {
         settings: this.state.settings,
         adminUsers: this.state.adminUsers
       }).then((res) => {
-        console.log('⚡ Database Seeding status:', res.message);
+        console.log('⚡ Database Seeding status:', res ? 'success' : 'failed');
       }).catch(() => {});
     }
 
@@ -1145,6 +1145,40 @@ class Store {
     }
 
     this.saveState();
+  }
+
+  // -------------------------------------------------------------
+  // OPENAPI AFRICA / CLICKNPAY PAYMENT GATEWAY
+  // -------------------------------------------------------------
+
+  public async initiatePaymentOrder(params: {
+    amount: number;
+    customerPhone: string;
+    customerEmail?: string;
+    description: string;
+    purpose?: string;
+    relatedId?: string;
+    currency?: 'USD' | 'ZWG';
+  }): Promise<{ success: boolean; clientReference: string; paymeURL?: string; isSimulated?: boolean; error?: string }> {
+    try {
+      const res = await fetch('/api/payments/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, clientReference: '', error: err.message };
+    }
+  }
+
+  public async pollPaymentStatus(reference: string): Promise<{ clientReference: string; status: 'PENDING' | 'SUCCESS' | 'FAILED'; isPaid: boolean }> {
+    try {
+      const res = await fetch(`/api/payments/orders/${encodeURIComponent(reference)}/status`);
+      return await res.json();
+    } catch (err: any) {
+      return { clientReference: reference, status: 'PENDING', isPaid: false };
+    }
   }
 
   // -------------------------------------------------------------

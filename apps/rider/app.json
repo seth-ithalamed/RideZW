@@ -1,1 +1,41 @@
-{"expo":{"name":"RideZW Rider","slug":"ridezw-rider","version":"1.0.0","orientation":"portrait","ios":{"bundleIdentifier":"zw.ridezw.rider"},"android":{"package":"zw.ridezw.rider"}}}
+{
+  "expo": {
+    "name": "RideZW Rider",
+    "slug": "ridezwrider",
+    "owner": "chesa-pride",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/appicon.jpg",
+    "userInterfaceStyle": "light",
+    "scheme": "ridezw-rider",
+    "splash": {
+      "image": "./assets/splash.jpg",
+      "resizeMode": "contain",
+      "backgroundColor": "#0f172a"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "zw.ridezw.rider",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "RideZW requires location access to set your pickup point and calculate fares."
+      }
+    },
+    "android": {
+      "package": "zw.ridezw.rider",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/appicon.jpg",
+        "backgroundColor": "#0f172a"
+      },
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "INTERNET"
+      ]
+    },
+    "extra": {
+      "eas": {
+        "projectId": "99d22619-653f-4ab4-8a9f-a35ff31dceaa"
+      }
+    }
+  }
+}
