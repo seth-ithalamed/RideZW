@@ -109,7 +109,7 @@ export default function App() {
             <div className="flex flex-wrap items-center gap-4 text-xs font-medium text-slate-600">
               <span>Harare & Bulawayo</span>
               <span>•</span>
-              <span>24/7 ZRP Linked SOS Dispatch</span>
+              <span>24/7 Emergency SOS Dispatch</span>
               <span>•</span>
               <span>EcoCash & ZiG Support</span>
             </div>

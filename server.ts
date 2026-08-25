@@ -701,15 +701,18 @@ app.get('/api/state', async (req, res) => {
 
   if (sb) {
     try {
-      const [tripsRes, driversRes, ridersRes, sosRes, ledgerRes, settingsRes, citiesRes] = await Promise.allSettled([
+      const [tripsRes, driversRes, ridersRes, sosRes, ledgerRes, settingsRes, citiesRes, pricingRes] = await Promise.allSettled([
         sb.from('trips').select('*').order('created_at', { ascending: false }).limit(50),
         sb.from('drivers').select('*'),
         sb.from('riders').select('*'),
         sb.from('sos_alerts').select('*').order('created_at', { ascending: false }).limit(20),
         sb.from('ledger_entries').select('*').order('created_at', { ascending: false }).limit(50),
         sb.from('platform_settings').select('*').limit(1),
-        sb.from('coverage_cities').select('*')
+        sb.from('coverage_cities').select('*'),
+        sb.from('pricing_configs').select('*')
       ]);
+
+      const dbSettings = settingsRes.status === 'fulfilled' && settingsRes.value.data?.[0] ? settingsRes.value.data[0] : serverDb.platformSettings;
 
       return res.json({
         success: true,
@@ -720,8 +723,9 @@ app.get('/api/state', async (req, res) => {
           riders: ridersRes.status === 'fulfilled' && ridersRes.value.data ? ridersRes.value.data : Array.from(serverDb.riders.values()),
           sosAlerts: sosRes.status === 'fulfilled' && sosRes.value.data ? sosRes.value.data : Array.from(serverDb.sosAlerts.values()),
           ledger: ledgerRes.status === 'fulfilled' && ledgerRes.value.data ? ledgerRes.value.data : Array.from(serverDb.ledgerEntries.values()),
-          settings: settingsRes.status === 'fulfilled' && settingsRes.value.data?.[0] ? settingsRes.value.data[0] : serverDb.platformSettings,
-          coverageCities: citiesRes.status === 'fulfilled' && citiesRes.value.data ? citiesRes.value.data : Array.from(serverDb.coverageCities.values())
+          settings: dbSettings,
+          coverageCities: citiesRes.status === 'fulfilled' && citiesRes.value.data ? citiesRes.value.data : Array.from(serverDb.coverageCities.values()),
+          pricingConfigs: pricingRes.status === 'fulfilled' && pricingRes.value.data && pricingRes.value.data.length > 0 ? pricingRes.value.data : Array.from(serverDb.pricingConfigs.values())
         }
       });
     } catch (e: any) {
@@ -739,7 +743,8 @@ app.get('/api/state', async (req, res) => {
       sosAlerts: Array.from(serverDb.sosAlerts.values()),
       ledger: Array.from(serverDb.ledgerEntries.values()),
       settings: serverDb.platformSettings,
-      coverageCities: Array.from(serverDb.coverageCities.values())
+      coverageCities: Array.from(serverDb.coverageCities.values()),
+      pricingConfigs: Array.from(serverDb.pricingConfigs.values())
     }
   });
 });
@@ -898,7 +903,18 @@ app.post('/api/pricing', async (req, res) => {
   return res.json({ success: true, message: 'Pricing configurations updated' });
 });
 
-app.get('/api/pricing', (req, res) => {
+app.get('/api/pricing', async (req, res) => {
+  const sb = getServerSupabase();
+  if (sb) {
+    try {
+      const { data } = await sb.from('pricing_configs').select('*');
+      if (data && data.length > 0) {
+        return res.json({ success: true, pricingConfigs: data });
+      }
+    } catch (e: any) {
+      console.warn('Supabase pricing query failed:', e.message);
+    }
+  }
   return res.json({ success: true, pricingConfigs: Array.from(serverDb.pricingConfigs.values()) });
 });
 
@@ -907,11 +923,38 @@ app.post('/api/settings', async (req, res) => {
   const { settings } = req.body;
   if (settings) {
     serverDb.platformSettings = { ...serverDb.platformSettings, ...settings };
+    const sb = getServerSupabase();
+    if (sb) {
+      try {
+        await sb.from('platform_settings').upsert({
+          id: 'default_settings',
+          usd_to_zwg_rate: settings.exchangeRateUSDToZWG || settings.usd_to_zwg_rate || 26.85,
+          platform_commission_percent: settings.platformCommissionPercent || settings.platform_commission_percent || 12.0,
+          driver_debt_ceiling_usd: settings.driverDebtCeilingUSD || settings.driver_debt_ceiling_usd || 15.00,
+          sos_police_number: settings.sos_police_number || '+263 242 777777',
+          sos_security_hotline: settings.sos_security_hotline || '+263 77 000 9999',
+          updated_at: new Date().toISOString()
+        });
+      } catch (e: any) {
+        console.warn('Supabase settings update error:', e.message);
+      }
+    }
   }
   return res.json({ success: true, message: 'Platform settings updated' });
 });
 
-app.get('/api/settings', (req, res) => {
+app.get('/api/settings', async (req, res) => {
+  const sb = getServerSupabase();
+  if (sb) {
+    try {
+      const { data } = await sb.from('platform_settings').select('*').limit(1);
+      if (data && data.length > 0) {
+        return res.json({ success: true, settings: data[0] });
+      }
+    } catch (e: any) {
+      console.warn('Supabase settings query error:', e.message);
+    }
+  }
   return res.json({ success: true, settings: serverDb.platformSettings });
 });
 

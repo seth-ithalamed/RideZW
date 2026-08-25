@@ -986,7 +986,7 @@ export const RiderApp: React.FC<RiderAppProps> = ({ currency, language }) => {
               </div>
               <div>
                 <h3 className="text-slate-900 font-bold text-sm">24/7 SOS Emergency Assistance</h3>
-                <p className="text-[11px] text-slate-500">Live GPS dispatch & ZRP Police coordination</p>
+                <p className="text-[11px] text-slate-500">Live GPS dispatch & Emergency Response coordination</p>
               </div>
             </div>
 

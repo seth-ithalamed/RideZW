@@ -50,6 +50,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   const [isDownloadModalOpen, setIsDownloadModalOpen] = useState(false);
   const [downloadModalRole, setDownloadModalRole] = useState<'rider' | 'driver'>('rider');
 
+  const commissionPercentage = state.settings.platformCommissionPercent !== undefined
+    ? Number(state.settings.platformCommissionPercent)
+    : (state.pricingConfigs.length > 0 ? Number(state.pricingConfigs[0].commissionPercentage) : 12.0);
+  const driverKeepsPercent = Number((100 - commissionPercentage).toFixed(1));
+
   useEffect(() => {
     const unsubscribe = store.subscribe(() => {
       setState(store.getState());
@@ -145,7 +150,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
     },
     {
       q: 'How do driver payouts work?',
-      a: 'Driver partners keep 88% of every fare (industry-low 12% platform fee) and can withdraw their earnings instantly to EcoCash, OneMoney, InnBucks, Telecash, or their bank accounts 24/7 with zero delay.'
+      a: `Driver partners keep ${driverKeepsPercent}% of every fare (industry-low ${commissionPercentage}% platform fee) and can withdraw their earnings instantly to EcoCash, OneMoney, InnBucks, Telecash, or their bank accounts 24/7 with zero delay.`
     }
   ];
 
@@ -208,8 +213,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             <div className="pt-4 border-t border-sky-800/60 grid grid-cols-3 gap-3 text-xs">
               <div className="space-y-0.5">
                 <span className="text-[10px] uppercase font-mono text-amber-300 font-bold block">Commission</span>
-                <span className="font-extrabold text-white text-sm">Low 12%</span>
-                <span className="text-[10px] text-slate-400 block">Drivers keep 88%</span>
+                <span className="font-extrabold text-white text-sm">Low {commissionPercentage}%</span>
+                <span className="text-[10px] text-slate-400 block">Drivers keep {driverKeepsPercent}%</span>
               </div>
               <div className="space-y-0.5">
                 <span className="text-[10px] uppercase font-mono text-sky-300 font-bold block">Settlement</span>
@@ -218,7 +223,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               </div>
               <div className="space-y-0.5">
                 <span className="text-[10px] uppercase font-mono text-emerald-300 font-bold block">Safety</span>
-                <span className="font-extrabold text-white text-sm">ZRP Linked SOS</span>
+                <span className="font-extrabold text-white text-sm">Emergency SOS</span>
                 <span className="text-[10px] text-slate-400 block">VID Certified Fleet</span>
               </div>
             </div>
@@ -391,7 +396,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             </div>
             <h3 className="text-base font-bold text-slate-900">Travel Safely & Pay Flexibly</h3>
             <p className="text-xs text-slate-600 leading-relaxed">
-              Enjoy GPS-tracked travel with integrated 24/7 ZRP emergency monitoring. Pay easily with USD Cash, EcoCash, or ZiG.
+              Enjoy GPS-tracked travel with integrated 24/7 emergency monitoring. Pay easily with USD Cash, EcoCash, or ZiG.
             </p>
             <ul className="text-[11px] text-slate-500 space-y-1 pt-1">
               <li className="flex items-center gap-1.5">
@@ -653,7 +658,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 <p className="text-xs text-sky-200">For vehicle owners, taxi operators, and transport fleets nationwide.</p>
               </div>
               <span className="px-2.5 py-1 rounded bg-emerald-400/20 text-emerald-300 border border-emerald-400/30 text-[11px] font-mono font-bold shrink-0">
-                88% Payout
+                {driverKeepsPercent}% Payout
               </span>
             </div>
 
@@ -714,9 +719,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             </p>
           </div>
           <div className="space-y-1">
-            <span className="font-bold text-emerald-300 text-[11px] block">🛡️ ZRP & Emergency Linked</span>
+            <span className="font-bold text-emerald-300 text-[11px] block">🛡️ 24/7 Emergency Dispatch</span>
             <p className="text-slate-300 text-[11px] leading-relaxed">
-              1-tap panic SOS dispatches live satellite coordinates directly to Zimbabwe Republic Police and local emergency response teams.
+              1-tap panic SOS dispatches live satellite coordinates directly to rapid response teams and emergency services.
             </p>
           </div>
         </div>
@@ -735,7 +740,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               Turn Your Vehicle Into A High-Earning Daily Business
             </h3>
             <p className="text-xs sm:text-sm font-medium text-slate-900 leading-relaxed">
-              Join hundreds of Zimbabwean car owners making sustainable incomes. Enjoy 88% payout share, choose the trips you want, and withdraw your money to EcoCash any time.
+              Join hundreds of Zimbabwean car owners making sustainable incomes. Enjoy {driverKeepsPercent}% payout share, choose the trips you want, and withdraw your money to EcoCash any time.
             </p>
           </div>
 

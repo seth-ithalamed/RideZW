@@ -284,6 +284,7 @@ export interface PlatformSettings {
   enforceGovernmentPermitGating: boolean; // Toggle: block drivers with no valid permit from going online
   serviceRadiusKm: number;
   autoApprovePayoutUnderUSD: number; // e.g. $20.00
+  platformCommissionPercent?: number; // e.g. 12.0
 }
 
 // -------------------------------------------------------------

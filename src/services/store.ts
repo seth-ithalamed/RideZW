@@ -176,13 +176,64 @@ class Store {
    */
   public async hydrateFromDatabase() {
     try {
-      // 1. Try fetching directly from Supabase
+      // 1. Fetch State through Express backend API (which queries the database securely)
+      const backendRes = await fetchBackendState();
+      if (backendRes && backendRes.data) {
+        const b = backendRes.data;
+        if (b.trips && b.trips.length > 0) {
+          this.state.tripHistory = b.trips;
+          const liveActive = b.trips.find((t: any) =>
+            ['requested', 'accepted', 'in_progress', 'counter_offered'].includes(t.status)
+          );
+          if (liveActive) {
+            this.state.activeTrip = liveActive;
+          }
+        }
+        if (b.drivers && b.drivers.length > 0) {
+          this.state.drivers = b.drivers;
+        }
+        if (b.riders && b.riders.length > 0) {
+          this.state.riders = b.riders;
+        }
+        if (b.sosAlerts && b.sosAlerts.length > 0) {
+          this.state.sosAlerts = b.sosAlerts;
+        }
+        if (b.ledger && b.ledger.length > 0) {
+          this.state.ledger = b.ledger;
+        }
+        if (b.pricingConfigs && b.pricingConfigs.length > 0) {
+          this.state.pricingConfigs = b.pricingConfigs;
+        }
+        if (b.settings) {
+          const s = b.settings;
+          const comm = s.platform_commission_percent !== undefined ? Number(s.platform_commission_percent) : (s.platformCommissionPercent !== undefined ? Number(s.platformCommissionPercent) : undefined);
+          this.state.settings = {
+            ...this.state.settings,
+            ...s,
+            exchangeRateUSDToZWG: s.usd_to_zwg_rate ? Number(s.usd_to_zwg_rate) : (s.exchangeRateUSDToZWG || this.state.settings.exchangeRateUSDToZWG),
+            driverDebtCeilingUSD: s.driver_debt_ceiling_usd ? Number(s.driver_debt_ceiling_usd) : (s.driverDebtCeilingUSD || this.state.settings.driverDebtCeilingUSD),
+            platformCommissionPercent: comm !== undefined ? comm : 12.0
+          };
+          if (comm !== undefined && (!b.pricingConfigs || b.pricingConfigs.length === 0)) {
+            this.state.pricingConfigs.forEach(c => {
+              c.commissionPercentage = comm;
+              c.cashLevyPercentage = comm;
+            });
+          }
+        }
+        if (b.coverageCities && b.coverageCities.length > 0) {
+          this.state.coverageCities = b.coverageCities;
+        }
+        this.notify();
+        return;
+      }
+
+      // 2. Fallback to Supabase directly if backend state was unavailable
       if (isSupabaseConfigured()) {
         const supabaseData = await fetchAllDataFromSupabase();
         if (supabaseData) {
           if (supabaseData.trips && supabaseData.trips.length > 0) {
             this.state.tripHistory = supabaseData.trips;
-            // Check for currently active/in-progress trip
             const liveActive = supabaseData.trips.find((t) =>
               ['requested', 'accepted', 'in_progress', 'counter_offered'].includes(t.status)
             );
@@ -203,7 +254,13 @@ class Store {
             this.state.ledger = supabaseData.ledger;
           }
           if (supabaseData.settings) {
-            this.state.settings = { ...this.state.settings, ...supabaseData.settings };
+            const s = supabaseData.settings;
+            const comm = (s as any).platform_commission_percent !== undefined ? Number((s as any).platform_commission_percent) : s.platformCommissionPercent;
+            this.state.settings = {
+              ...this.state.settings,
+              ...s,
+              platformCommissionPercent: comm !== undefined ? comm : 12.0
+            };
           }
           if (supabaseData.coverageCities && supabaseData.coverageCities.length > 0) {
             this.state.coverageCities = supabaseData.coverageCities;
@@ -212,36 +269,7 @@ class Store {
             this.state.activeSessions = supabaseData.activeSessions;
           }
           this.notify();
-          return;
         }
-      }
-
-      // 2. Fallback to Express backend state API
-      const backendRes = await fetchBackendState();
-      if (backendRes && backendRes.data) {
-        const b = backendRes.data;
-        if (b.trips && b.trips.length > 0) {
-          this.state.tripHistory = b.trips;
-        }
-        if (b.drivers && b.drivers.length > 0) {
-          this.state.drivers = b.drivers;
-        }
-        if (b.riders && b.riders.length > 0) {
-          this.state.riders = b.riders;
-        }
-        if (b.sosAlerts && b.sosAlerts.length > 0) {
-          this.state.sosAlerts = b.sosAlerts;
-        }
-        if (b.ledger && b.ledger.length > 0) {
-          this.state.ledger = b.ledger;
-        }
-        if (b.settings) {
-          this.state.settings = { ...this.state.settings, ...b.settings };
-        }
-        if (b.coverageCities && b.coverageCities.length > 0) {
-          this.state.coverageCities = b.coverageCities;
-        }
-        this.notify();
       }
     } catch (err) {
       console.warn('[DB Hydration] Notice: using baseline seed in memory:', err);
