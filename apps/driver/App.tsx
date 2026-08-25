@@ -1,4 +1,4 @@
-import { AuthGate } from '../shared/AuthGate';
+import { AuthGate } from './src/AuthGate';
 import { useEffect, useState, useRef } from 'react';
 import {
   Pressable,
@@ -12,7 +12,7 @@ import {
   Alert
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { ridezwApi, MobileTrip } from '../shared/api';
+import { ridezwApi, MobileTrip } from './src/api';
 
 export default function DriverApp() {
   const [available, setAvailable] = useState(false);

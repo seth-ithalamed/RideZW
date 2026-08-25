@@ -1,4 +1,4 @@
-import { AuthGate } from '../shared/AuthGate';
+import { AuthGate } from './src/AuthGate';
 import { useEffect, useState, useRef } from 'react';
 import {
   Pressable,
@@ -14,7 +14,7 @@ import {
   TouchableOpacity
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { ridezwApi, MobileTrip } from '../shared/api';
+import { ridezwApi, MobileTrip } from './src/api';
 import {
   LocationPoint,
   ZimbabwePlace,
@@ -22,7 +22,7 @@ import {
   calculateTripRoute,
   reverseGeocode,
   ZIMBABWE_PLACES_DATABASE
-} from '../shared/locationService';
+} from './src/locationService';
 
 const AVAILABLE_CITIES = ['Harare', 'Bulawayo', 'Chitungwiza', 'Victoria Falls', 'Mutare', 'Gweru'];
 
