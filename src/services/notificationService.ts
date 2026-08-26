@@ -251,14 +251,13 @@ export async function sendDirectTestSms(params: {
 
 export async function requestSmsOtp(
   phone: string,
-  role?: 'driver' | 'rider',
-  twilioConfig?: { accountSid?: string; authToken?: string; fromNumber?: string }
+  role?: 'driver' | 'rider'
 ): Promise<OtpResponse> {
   try {
     const res = await fetch('/api/auth/send-otp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, role, ...(twilioConfig ? { twilioConfig } : {}) })
+      body: JSON.stringify({ phone, role })
     });
     return await res.json();
   } catch (err: any) {
@@ -267,12 +266,17 @@ export async function requestSmsOtp(
   }
 }
 
-export async function verifySmsOtp(phone: string, code: string, role?: 'driver' | 'rider'): Promise<{ success: boolean; message?: string; error?: string; userProfile?: any }> {
+export async function verifySmsOtp(
+  phone: string,
+  code: string,
+  role?: 'driver' | 'rider',
+  regDetails?: any
+): Promise<{ success: boolean; message?: string; error?: string; userProfile?: any; user?: any; session?: any }> {
   try {
     const res = await fetch('/api/auth/verify-otp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, code, role })
+      body: JSON.stringify({ phone, code, role, ...(regDetails || {}) })
     });
     return await res.json();
   } catch (err: any) {

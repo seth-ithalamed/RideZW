@@ -84,23 +84,20 @@ function normalizePhoneForTwilio(phone: string): string {
   return cleaned;
 }
 
-let twilioClient: any = null;
-let runtimeTwilioConfig: { accountSid?: string; authToken?: string; fromNumber?: string } = {
-  accountSid: (process.env.TWILIO_ACCOUNT_SID || '').trim(),
-  authToken: (process.env.TWILIO_AUTH_TOKEN || '').trim(),
-  fromNumber: (process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_MESSAGING_SERVICE_SID || '').trim()
-};
+function getTwilioConfig() {
+  const sid = String(process.env.TWILIO_ACCOUNT_SID || process.env.TWILIO_SID || '').trim();
+  const token = String(process.env.TWILIO_AUTH_TOKEN || process.env.TWILIO_TOKEN || '').trim();
+  const from = String(process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_FROM_NUMBER || process.env.TWILIO_MESSAGING_SERVICE_SID || process.env.TWILIO_NUMBER || '').trim();
+  return { sid, token, from, isConfigured: Boolean(sid && token && from) };
+}
 
-function getTwilio(customSid?: string, customToken?: string) {
-  const sid = customSid || runtimeTwilioConfig.accountSid || (process.env.TWILIO_ACCOUNT_SID || '').trim();
-  const token = customToken || runtimeTwilioConfig.authToken || (process.env.TWILIO_AUTH_TOKEN || '').trim();
-  if (!sid || !token) {
-    return null;
-  }
+function getTwilio() {
+  const { sid, token } = getTwilioConfig();
+  if (!sid || !token) return null;
   try {
     return twilio(sid, token);
   } catch (e: any) {
-    console.error('Twilio initialization failed:', e.message);
+    console.error('Twilio client initialization failed:', e.message);
     return null;
   }
 }
@@ -167,30 +164,27 @@ async function requireMobileUser(req: any, res: any): Promise<any | null> {
   return null;
 }
 
-// Mobile OTP Dispatch Endpoint
-app.post('/api/mobile/auth/send-otp', async (req, res) => {
-  const { phone, role = 'rider' } = req.body || {};
-  if (!phone) return res.status(400).json({ error: 'Mobile phone number is required' });
+// =============================================================================
+// UNIFIED AUTH & OTP ENGINE (Used by Web & Mobile Apps)
+// =============================================================================
 
+async function dispatchOtpSms(phone: string, role: string = 'rider') {
   const normalizedPhone = normalizePhoneForTwilio(phone);
   const code = Math.floor(100000 + Math.random() * 900000).toString();
 
   const entry = {
     code,
-    expiresAt: Date.now() + 5 * 60 * 1000
+    expiresAt: Date.now() + 5 * 60 * 1000 // 5 minutes
   };
   otpStore[phone] = entry;
   otpStore[normalizedPhone] = entry;
 
   const smsBody = `Your RideZW security verification code is: ${code}. Valid for 5 minutes. Do not share this code.`;
+  const { sid, token, from, isConfigured } = getTwilioConfig();
 
-  const sid = (runtimeTwilioConfig.accountSid || process.env.TWILIO_ACCOUNT_SID || '').trim();
-  const token = (runtimeTwilioConfig.authToken || process.env.TWILIO_AUTH_TOKEN || '').trim();
-  const from = (runtimeTwilioConfig.fromNumber || process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_MESSAGING_SERVICE_SID || '').trim();
-
-  if (sid && token && from) {
+  if (isConfigured) {
     try {
-      const twilioInstance = getTwilio(sid, token);
+      const twilioInstance = getTwilio();
       if (twilioInstance) {
         const msgParams: any = {
           body: smsBody,
@@ -202,34 +196,43 @@ app.post('/api/mobile/auth/send-otp', async (req, res) => {
           msgParams.from = from;
         }
         const msg = await twilioInstance.messages.create(msgParams);
-        return res.json({
+        console.log(`[Twilio SMS] Successfully dispatched to ${normalizedPhone}, SID: ${msg.sid}`);
+        return {
           success: true,
-          message: `SMS verification code sent to ${normalizedPhone}`,
+          message: `SMS verification code dispatched to ${normalizedPhone}`,
           calledTwilio: true,
           isSimulated: false,
-          code, // Included for seamless developer testing / preview
           targetPhone: normalizedPhone,
           twilioSid: msg.sid
-        });
+        };
       }
     } catch (err: any) {
-      console.warn('Twilio dispatch error:', err.message);
+      console.warn('[Twilio SMS Error]:', err.message);
+      return {
+        success: true,
+        message: `Twilio delivery issue: ${err.message}`,
+        calledTwilio: true,
+        twilioError: err.message,
+        isSimulated: true,
+        code,
+        targetPhone: normalizedPhone
+      };
     }
   }
 
-  // Preview / Simulation fallback
-  return res.json({
+  // Fallback when running in container without configured Twilio secrets
+  console.log(`[OTP Simulated] Verification code for ${normalizedPhone}: ${code}`);
+  return {
     success: true,
     message: `Verification code generated for ${normalizedPhone}`,
     calledTwilio: false,
     isSimulated: true,
     code,
     targetPhone: normalizedPhone
-  });
-});
+  };
+}
 
-// Mobile OTP Verification & Login/Signup Endpoint
-app.post('/api/mobile/auth/verify-otp', async (req, res) => {
+async function processVerifyOtp(body: any) {
   const {
     phone,
     code,
@@ -241,9 +244,10 @@ app.post('/api/mobile/auth/verify-otp', async (req, res) => {
     vehicleMake,
     vehiclePlate,
     vehicleCategory
-  } = req.body || {};
+  } = body || {};
+
   if (!phone || !code) {
-    return res.status(400).json({ error: 'Phone number and verification code are required' });
+    return { status: 400, error: 'Phone number and verification code are required' };
   }
 
   const normalizedPhone = normalizePhoneForTwilio(phone);
@@ -251,24 +255,23 @@ app.post('/api/mobile/auth/verify-otp', async (req, res) => {
   const isMasterCode = String(code).trim() === '123456';
 
   if (!stored && !isMasterCode) {
-    return res.status(400).json({ error: 'No active OTP request found or code expired' });
+    return { status: 400, error: 'No active OTP request found or code expired' };
   }
 
   if (!isMasterCode && stored) {
     if (Date.now() > stored.expiresAt) {
       delete otpStore[phone];
       delete otpStore[normalizedPhone];
-      return res.status(400).json({ error: 'OTP has expired. Please request a new code.' });
+      return { status: 400, error: 'OTP has expired. Please request a new code.' };
     }
     if (stored.code !== String(code).trim()) {
-      return res.status(400).json({ error: 'Invalid verification code. Please try again.' });
+      return { status: 400, error: 'Invalid verification code. Please check your SMS and try again.' };
     }
   }
 
   delete otpStore[phone];
   delete otpStore[normalizedPhone];
 
-  // Resolve user record
   const effectiveRole = ['driver', 'rider'].includes(role) ? role : 'rider';
   const cleanDigits = normalizedPhone.replace(/\D/g, '').slice(-8) || 'user';
   const userId = (effectiveRole === 'driver' ? 'drv_' : 'rdr_') + cleanDigits;
@@ -286,7 +289,7 @@ app.post('/api/mobile/auth/verify-otp', async (req, res) => {
         if (data && data.length > 0) existingRecord = data[0];
       }
     } catch (e) {
-      console.warn('Supabase profile fetch warning:', e);
+      console.warn('Supabase profile query warning:', e);
     }
   }
 
@@ -328,6 +331,25 @@ app.post('/api/mobile/auth/verify-otp', async (req, res) => {
     if (vehicleCategory) existingRecord.vehicle = { ...existingRecord.vehicle, category: vCat };
 
     serverDb.drivers.set(userId, existingRecord);
+
+    if (sb) {
+      try {
+        await sb.from('drivers').upsert({
+          id: userId,
+          name: existingRecord.name,
+          phone: normalizedPhone,
+          email: existingRecord.email,
+          national_id: existingRecord.nationalId,
+          city: existingRecord.city,
+          vehicle_make: existingRecord.vehicle?.make,
+          vehicle_model: existingRecord.vehicle?.model,
+          vehicle_plate: existingRecord.vehicle?.plateNumber,
+          vehicle_category: existingRecord.vehicle?.category
+        });
+      } catch (err) {
+        console.warn('DB driver upsert sync warning:', err);
+      }
+    }
   } else {
     existingRecord = serverDb.riders.get(userId) || existingRecord || {
       id: userId,
@@ -345,6 +367,20 @@ app.post('/api/mobile/auth/verify-otp', async (req, res) => {
     if (email) existingRecord.email = email;
 
     serverDb.riders.set(userId, existingRecord);
+
+    if (sb) {
+      try {
+        await sb.from('riders').upsert({
+          id: userId,
+          name: existingRecord.name,
+          phone: normalizedPhone,
+          email: existingRecord.email,
+          city: existingRecord.city
+        });
+      } catch (err) {
+        console.warn('DB rider upsert sync warning:', err);
+      }
+    }
   }
 
   const user = {
@@ -364,16 +400,53 @@ app.post('/api/mobile/auth/verify-otp', async (req, res) => {
   const sessionToken = `rzw_mobile_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   mobileOtpSessions.set(sessionToken, { user, createdAt: Date.now() });
 
-  return res.json({
+  return {
+    status: 200,
     success: true,
     user,
+    userProfile: existingRecord,
+    role: effectiveRole,
     session: {
       access_token: sessionToken,
       refresh_token: sessionToken,
       expires_in: 86400 * 30,
       token_type: 'bearer'
     }
-  });
+  };
+}
+
+// Mobile OTP Dispatch Endpoint
+app.post('/api/mobile/auth/send-otp', async (req, res) => {
+  const { phone, role = 'rider' } = req.body || {};
+  if (!phone) return res.status(400).json({ error: 'Mobile phone number is required' });
+  const result = await dispatchOtpSms(phone, role);
+  return res.json(result);
+});
+
+// Mobile OTP Verification & Login/Signup Endpoint
+app.post('/api/mobile/auth/verify-otp', async (req, res) => {
+  const result: any = await processVerifyOtp(req.body);
+  if (result.status && result.status !== 200) {
+    return res.status(result.status).json({ error: result.error, success: false });
+  }
+  return res.json(result);
+});
+
+// Web OTP Dispatch Endpoint
+app.post('/api/auth/send-otp', async (req, res) => {
+  const { phone, role = 'rider' } = req.body || {};
+  if (!phone) return res.status(400).json({ error: 'Mobile phone number is required' });
+  const result = await dispatchOtpSms(phone, role);
+  return res.json(result);
+});
+
+// Web OTP Verification Endpoint
+app.post('/api/auth/verify-otp', async (req, res) => {
+  const result: any = await processVerifyOtp(req.body);
+  if (result.status && result.status !== 200) {
+    return res.status(result.status).json({ error: result.error, success: false });
+  }
+  return res.json(result);
 });
 
 app.post('/api/auth/admin-login', async (req, res) => {
@@ -1147,266 +1220,38 @@ app.post('/api/seed', async (req, res) => {
   });
 });
 
-// 11. Twilio SMS OTP Dispatch
-app.post('/api/auth/send-otp', async (req, res) => {
-  const { phone, role } = req.body;
-  if (!phone) {
-    return res.status(400).json({ error: 'Phone number is required' });
-  }
-
-  const normalizedPhone = normalizePhoneForTwilio(phone);
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
-  
-  // Store both raw and normalized phone keys
-  const entry = {
-    code,
-    expiresAt: Date.now() + 5 * 60 * 1000 // 5 minutes validity
-  };
-  otpStore[phone] = entry;
-  otpStore[normalizedPhone] = entry;
-
-  // Supabase Database Lookup
-  const sb = getServerSupabase();
-  let dbUser: any = null;
-  let dbAccountType: 'driver' | 'rider' | null = null;
-
-  if (sb) {
-    try {
-      if (role === 'driver' || !role) {
-        const { data: drivers } = await sb
-          .from('drivers')
-          .select('id, name, phone, national_id, email, kyc_status, is_online, rating, wallet_balance, total_trips')
-          .or(`phone.eq.${phone},phone.eq.${normalizedPhone}`)
-          .limit(1);
-        if (drivers && drivers.length > 0) {
-          dbUser = drivers[0];
-          dbAccountType = 'driver';
-        }
-      }
-      if (!dbUser && (role === 'rider' || !role)) {
-        const { data: riders } = await sb
-          .from('riders')
-          .select('id, name, phone, email, status, wallet_balance, total_trips')
-          .or(`phone.eq.${phone},phone.eq.${normalizedPhone}`)
-          .limit(1);
-        if (riders && riders.length > 0) {
-          dbUser = riders[0];
-          dbAccountType = 'rider';
-        }
-      }
-    } catch (dbErr) {
-      console.warn('[DB Check Error]:', dbErr);
-    }
-  }
-
-  // Check In-Memory fallback if Supabase not configured
-  if (!dbUser) {
-    const memDrivers = Array.from(serverDb.drivers.values());
-    const memDriver = memDrivers.find(
-      (d: any) => d.phone === phone || d.phone === normalizedPhone
-    );
-    if (memDriver) {
-      dbUser = memDriver;
-      dbAccountType = 'driver';
-    } else {
-      const memRiders = Array.from(serverDb.riders.values());
-      const memRider = memRiders.find(
-        (r: any) => r.phone === phone || r.phone === normalizedPhone
-      );
-      if (memRider) {
-        dbUser = memRider;
-        dbAccountType = 'rider';
-      }
-    }
-  }
-
-  // Determine effective Twilio credentials (request override > runtime config > process.env)
-  const reqTwilio = req.body.twilioConfig || {};
-  const twilioSid = (reqTwilio.accountSid || runtimeTwilioConfig.accountSid || process.env.TWILIO_ACCOUNT_SID || '').trim();
-  const twilioToken = (reqTwilio.authToken || runtimeTwilioConfig.authToken || process.env.TWILIO_AUTH_TOKEN || '').trim();
-  const twilioFrom = (reqTwilio.fromNumber || runtimeTwilioConfig.fromNumber || process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_MESSAGING_SERVICE_SID || '').trim();
-
-  const smsBody = `Your RideZW security verification code is: ${code}. Valid for 5 minutes. Do not share this code with anyone.`;
-  const twilioRequestPayload = {
-    to: normalizedPhone,
-    from: twilioFrom,
-    body: smsBody,
-    accountSidMasked: twilioSid ? `${twilioSid.slice(0, 6)}...${twilioSid.slice(-4)}` : null
-  };
-
-  // If Twilio credentials are provided in environment or runtime config
-  if (twilioSid && twilioToken && twilioFrom) {
-    try {
-      console.log(`[TWILIO API DISPATCH] Calling Twilio API from ${twilioFrom} to ${normalizedPhone}...`);
-      const twilioInstance = getTwilio(twilioSid, twilioToken);
-      if (!twilioInstance) {
-        throw new Error('Failed to initialize Twilio client with provided credentials');
-      }
-
-      const msgParams: any = {
-        body: smsBody,
-        to: normalizedPhone
-      };
-
-      if (twilioFrom.startsWith('MG')) {
-        msgParams.messagingServiceSid = twilioFrom;
-      } else {
-        msgParams.from = twilioFrom;
-      }
-
-      const msg = await twilioInstance.messages.create(msgParams);
-      console.log(`[TWILIO API SUCCESS] Twilio response received. SID: ${msg.sid}, Status: ${msg.status}`);
-      
-      const rawTwilioResponse = {
-        sid: msg.sid,
-        status: msg.status,
-        to: msg.to,
-        from: msg.from,
-        body: msg.body,
-        dateCreated: msg.dateCreated,
-        dateSent: msg.dateSent,
-        direction: msg.direction,
-        price: msg.price,
-        priceUnit: msg.priceUnit,
-        errorCode: msg.errorCode,
-        errorMessage: msg.errorMessage,
-        uri: msg.uri
-      };
-
-      return res.json({
-        success: true,
-        message: `Real SMS dispatched via Twilio to ${normalizedPhone}`,
-        calledTwilio: true,
-        isSimulated: false,
-        code,
-        dispatchedMessage: smsBody,
-        targetPhone: normalizedPhone,
-        twilioSid: msg.sid,
-        twilioStatus: msg.status,
-        twilioFrom,
-        twilioRequestPayload,
-        rawTwilioResponse,
-        userFoundInDb: Boolean(dbUser),
-        dbAccountType,
-        registeredName: dbUser?.name || null,
-        dbRecordId: dbUser?.id || null
-      });
-    } catch (err: any) {
-      console.error('[TWILIO API ERROR DETAILS]:', {
-        message: err.message,
-        code: err.code,
-        status: err.status,
-        moreInfo: err.moreInfo
-      });
-
-      const rawTwilioError = {
-        httpStatus: err.status || 500,
-        twilioErrorCode: err.code || null,
-        message: err.message,
-        moreInfo: err.moreInfo || 'https://www.twilio.com/docs/errors',
-        details: err.details || null
-      };
-
-      return res.json({
-        success: false,
-        calledTwilio: true,
-        isSimulated: false,
-        code,
-        dispatchedMessage: smsBody,
-        targetPhone: normalizedPhone,
-        twilioRequestPayload,
-        rawTwilioError,
-        twilioError: `Twilio Error (${err.code || 'API'}): ${err.message}`,
-        message: `Twilio Error (${err.code || 'API'}): ${err.message}`,
-        twilioStatus: 'failed',
-        userFoundInDb: Boolean(dbUser),
-        dbAccountType,
-        registeredName: dbUser?.name || null,
-        dbRecordId: dbUser?.id || null
-      });
-    }
-  }
-
-  // If Twilio env vars are missing
-  const missingVars = [];
-  if (!twilioSid) missingVars.push('TWILIO_ACCOUNT_SID');
-  if (!twilioToken) missingVars.push('TWILIO_AUTH_TOKEN');
-  if (!twilioFrom) missingVars.push('TWILIO_PHONE_NUMBER / TWILIO_MESSAGING_SERVICE_SID');
-
-  console.log(`[TWILIO NOT CALLED] Missing credentials: [${missingVars.join(', ')}]. Code for ${normalizedPhone}: ${code}`);
-  return res.json({
-    success: false,
-    calledTwilio: false,
-    message: `Twilio API was NOT called because server credentials are missing in this process environment (${missingVars.join(', ')}).`,
-    isSimulated: true,
-    code,
-    dispatchedMessage: smsBody,
-    targetPhone: normalizedPhone,
-    missingConfig: missingVars,
-    twilioStatus: 'not_configured',
-    userFoundInDb: Boolean(dbUser),
-    dbAccountType,
-    registeredName: dbUser?.name || null,
-    dbRecordId: dbUser?.id || null
-  });
-});
-
-// 11b. Twilio Status & Diagnostics Endpoint
+// 11. Twilio SMS Service Status Endpoint (Read-only status check)
 app.get('/api/auth/twilio-status', (req, res) => {
-  const sid = (runtimeTwilioConfig.accountSid || process.env.TWILIO_ACCOUNT_SID || '').trim();
-  const token = (runtimeTwilioConfig.authToken || process.env.TWILIO_AUTH_TOKEN || '').trim();
-  const from = (runtimeTwilioConfig.fromNumber || process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_MESSAGING_SERVICE_SID || '').trim();
-
+  const { sid, token, from, isConfigured } = getTwilioConfig();
   res.json({
-    isConfigured: Boolean(sid && token && from),
+    isConfigured,
     accountSidMasked: sid ? `${sid.slice(0, 6)}...${sid.slice(-4)}` : null,
     hasAuthToken: Boolean(token),
-    fromNumber: from || null,
-    source: runtimeTwilioConfig.accountSid ? 'runtime_configured' : (process.env.TWILIO_ACCOUNT_SID ? 'process_env' : 'none')
+    fromNumber: from || null
   });
 });
 
-// 11c. Twilio Runtime Config Update
-app.post('/api/auth/twilio-config', (req, res) => {
-  return res.status(410).json({ error: 'Twilio credentials are backend-managed. Configure server environment variables.' });
-  const { accountSid, authToken, fromNumber } = req.body;
-  if (accountSid) runtimeTwilioConfig.accountSid = accountSid.trim();
-  if (authToken) runtimeTwilioConfig.authToken = authToken.trim();
-  if (fromNumber) runtimeTwilioConfig.fromNumber = fromNumber.trim();
-
-  res.json({
-    success: true,
-    message: 'Twilio runtime configuration updated',
-    isConfigured: Boolean(runtimeTwilioConfig.accountSid && runtimeTwilioConfig.authToken && runtimeTwilioConfig.fromNumber),
-    accountSidMasked: runtimeTwilioConfig.accountSid ? `${runtimeTwilioConfig.accountSid.slice(0, 6)}...${runtimeTwilioConfig.accountSid.slice(-4)}` : null,
-    fromNumber: runtimeTwilioConfig.fromNumber
-  });
-});
-
-// 11d. Direct Twilio Test SMS Endpoint
+// 12. Direct Twilio Test SMS Endpoint (Backend env var validation)
 app.post('/api/auth/test-sms', async (req, res) => {
-  const { phone, message } = req.body;
+  const { phone, message } = req.body || {};
   if (!phone) {
     return res.status(400).json({ error: 'Target phone number is required' });
   }
 
   const normalizedPhone = normalizePhoneForTwilio(phone);
-  const cfg: any = req.body.twilioConfig || {};
-  const sid = (cfg.accountSid || runtimeTwilioConfig.accountSid || process.env.TWILIO_ACCOUNT_SID || '').trim();
-  const token = (cfg.authToken || runtimeTwilioConfig.authToken || process.env.TWILIO_AUTH_TOKEN || '').trim();
-  const from = (cfg.fromNumber || runtimeTwilioConfig.fromNumber || process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_MESSAGING_SERVICE_SID || '').trim();
+  const { sid, token, from, isConfigured } = getTwilioConfig();
 
-  if (!sid || !token || !from) {
+  if (!isConfigured) {
     return res.status(400).json({
       success: false,
       calledTwilio: false,
-      error: 'Twilio credentials not configured in environment or request'
+      error: 'Twilio credentials not configured in backend environment variables'
     });
   }
 
   const textBody = message || `Test message from RideZW at ${new Date().toLocaleTimeString()}`;
   try {
-    const twilioInst = getTwilio(sid, token);
+    const twilioInst = getTwilio();
     if (!twilioInst) throw new Error('Failed to create Twilio client instance');
 
     const params: any = {
@@ -1449,71 +1294,6 @@ app.post('/api/auth/test-sms', async (req, res) => {
       }
     });
   }
-});
-
-// 12. Verify OTP Endpoint
-app.post('/api/auth/verify-otp', async (req, res) => {
-  const { phone, code, role } = req.body;
-  if (!phone || !code) {
-    return res.status(400).json({ error: 'Phone number and code are required' });
-  }
-
-  const normalizedPhone = normalizePhoneForTwilio(phone);
-  const stored = otpStore[phone] || otpStore[normalizedPhone];
-  const isMasterCode = code.trim() === '123456';
-
-  if (!stored && !isMasterCode) {
-    return res.status(400).json({ success: false, error: 'No active OTP request found for this number' });
-  }
-
-  if (!isMasterCode) {
-    if (Date.now() > stored.expiresAt) {
-      delete otpStore[phone];
-      delete otpStore[normalizedPhone];
-      return res.status(400).json({ success: false, error: 'OTP has expired. Please request a new code.' });
-    }
-    if (stored.code !== code.trim()) {
-      return res.status(400).json({ success: false, error: 'Invalid verification code. Please try again.' });
-    }
-  }
-
-  delete otpStore[phone];
-  delete otpStore[normalizedPhone];
-
-  // Fetch verified user profile directly from Supabase
-  const sb = getServerSupabase();
-  let userProfile: any = null;
-  const detectedRole = role === 'driver' ? 'driver' : 'rider';
-
-  if (sb) {
-    try {
-      if (detectedRole === 'driver') {
-        const { data } = await sb
-          .from('drivers')
-          .select('*')
-          .or(`phone.eq.${phone},phone.eq.${normalizedPhone}`)
-          .limit(1);
-        if (data && data.length > 0) userProfile = data[0];
-      } else {
-        const { data } = await sb
-          .from('riders')
-          .select('*')
-          .or(`phone.eq.${phone},phone.eq.${normalizedPhone}`)
-          .limit(1);
-        if (data && data.length > 0) userProfile = data[0];
-      }
-    } catch (e) {
-      console.warn('Profile fetch error:', e);
-    }
-  }
-
-  return res.json({
-    success: true,
-    message: 'Phone number verified successfully',
-    verifiedAt: new Date().toISOString(),
-    userProfile,
-    role: detectedRole
-  });
 });
 
 // 13. Firebase Cloud Messaging (FCM) Push Notification Dispatch
