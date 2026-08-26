@@ -193,6 +193,11 @@ async function dispatchOtpSms(phone: string, role: string = 'rider') {
   const smsBody = `Your RideZW security verification code is: ${code}. Valid for 5 minutes. Do not share this code.`;
   const { sid, token, from, isConfigured } = getTwilioConfig();
 
+  const missingKeys: string[] = [];
+  if (!sid) missingKeys.push('TWILIO_ACCOUNT_SID');
+  if (!token) missingKeys.push('TWILIO_AUTH_TOKEN');
+  if (!from) missingKeys.push('TWILIO_PHONE_NUMBER');
+
   if (isConfigured) {
     try {
       const twilioInstance = getTwilio();
@@ -207,39 +212,74 @@ async function dispatchOtpSms(phone: string, role: string = 'rider') {
           msgParams.from = from;
         }
         const msg = await twilioInstance.messages.create(msgParams);
-        console.log(`[Twilio SMS] Successfully dispatched to ${normalizedPhone}, SID: ${msg.sid}`);
+        console.log(`[Twilio SMS Success] Dispatched to ${normalizedPhone}, SID: ${msg.sid}, Status: ${msg.status}`);
         return {
           success: true,
-          message: `SMS verification code dispatched to ${normalizedPhone}`,
+          message: `SMS security verification code dispatched to ${normalizedPhone}`,
           calledTwilio: true,
           isSimulated: false,
           targetPhone: normalizedPhone,
-          twilioSid: msg.sid
+          twilioSid: msg.sid,
+          twilioStatus: msg.status || 'queued',
+          twilioFrom: msg.from || from,
+          rawTwilioResponse: {
+            sid: msg.sid,
+            status: msg.status,
+            to: msg.to,
+            from: msg.from || from,
+            body: smsBody,
+            dateCreated: msg.dateCreated ? String(msg.dateCreated) : new Date().toISOString(),
+            direction: msg.direction || 'outbound-api',
+            price: msg.price || null,
+            priceUnit: msg.priceUnit || null,
+            errorCode: msg.errorCode || null,
+            errorMessage: msg.errorMessage || null
+          },
+          code
         };
       }
     } catch (err: any) {
-      console.warn('[Twilio SMS Error]:', err.message);
+      console.warn('[Twilio SMS Error]:', err.message, 'Code:', err.code, 'Status:', err.status);
       return {
         success: true,
-        message: `Twilio delivery issue: ${err.message}`,
+        message: `Twilio delivery note: ${err.message || 'SMS service error'}`,
         calledTwilio: true,
-        twilioError: err.message,
         isSimulated: true,
+        twilioError: err.message,
+        rawTwilioError: {
+          httpStatus: err.status || 500,
+          twilioErrorCode: err.code || null,
+          message: err.message || 'Twilio API communication error',
+          moreInfo: err.moreInfo || 'https://www.twilio.com/docs/api/errors'
+        },
         code,
-        targetPhone: normalizedPhone
+        targetPhone: normalizedPhone,
+        twilioRequestPayload: {
+          to: normalizedPhone,
+          from,
+          body: smsBody,
+          accountSidMasked: sid ? `${sid.slice(0, 6)}...${sid.slice(-4)}` : null
+        }
       };
     }
   }
 
   // Fallback when running in container without configured Twilio secrets
-  console.log(`[OTP Simulated] Verification code for ${normalizedPhone}: ${code}`);
+  console.log(`[OTP Simulated] Twilio not configured (${missingKeys.join(', ')} missing). Code for ${normalizedPhone}: ${code}`);
   return {
     success: true,
     message: `Verification code generated for ${normalizedPhone}`,
     calledTwilio: false,
     isSimulated: true,
+    missingConfig: missingKeys,
     code,
-    targetPhone: normalizedPhone
+    targetPhone: normalizedPhone,
+    twilioRequestPayload: {
+      to: normalizedPhone,
+      from: from || 'MISSING_TWILIO_PHONE_NUMBER',
+      body: smsBody,
+      accountSidMasked: sid ? `${sid.slice(0, 6)}...${sid.slice(-4)}` : null
+    }
   };
 }
 
@@ -461,6 +501,36 @@ app.all(['/api/auth/verify-otp', '/api/auth/verify-otp/'], async (req, res) => {
   if (result.status && result.status !== 200) {
     return res.status(result.status).json({ error: result.error, success: false });
   }
+  return res.json(result);
+});
+
+// Twilio & SMS Diagnostic Endpoint
+app.all(['/api/auth/diagnostic', '/api/auth/twilio-status'], (req, res) => {
+  const { sid, token, from, isConfigured } = getTwilioConfig();
+  const missingKeys: string[] = [];
+  if (!sid) missingKeys.push('TWILIO_ACCOUNT_SID');
+  if (!token) missingKeys.push('TWILIO_AUTH_TOKEN');
+  if (!from) missingKeys.push('TWILIO_PHONE_NUMBER');
+
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    twilio: {
+      isConfigured,
+      missingKeys,
+      accountSidMasked: sid ? `${sid.slice(0, 6)}...${sid.slice(-4)}` : null,
+      authTokenPresent: Boolean(token),
+      fromNumber: from || null
+    },
+    activeOtpRequests: Object.keys(otpStore).length
+  });
+});
+
+// Test SMS endpoint for developer verification
+app.all(['/api/auth/test-sms', '/api/auth/test-sms/'], async (req, res) => {
+  const phone = (req.body?.phone || req.query?.phone || '').toString().trim();
+  if (!phone) return res.status(400).json({ error: 'phone is required', success: false });
+  const result = await dispatchOtpSms(phone, 'test');
   return res.json(result);
 });
 
