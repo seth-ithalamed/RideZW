@@ -21,6 +21,7 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // In-memory OTP cache for verification
 const otpStore: Record<string, { code: string; expiresAt: number }> = {};
@@ -426,16 +427,18 @@ async function processVerifyOtp(body: any) {
 }
 
 // Mobile OTP Dispatch Endpoint
-app.post('/api/mobile/auth/send-otp', async (req, res) => {
-  const { phone, role = 'rider' } = req.body || {};
-  if (!phone) return res.status(400).json({ error: 'Mobile phone number is required' });
+app.all(['/api/mobile/auth/send-otp', '/api/mobile/auth/send-otp/'], async (req, res) => {
+  const phone = (req.body?.phone || req.query?.phone || '').toString().trim();
+  const role = (req.body?.role || req.query?.role || 'rider').toString().trim();
+  if (!phone) return res.status(400).json({ error: 'Mobile phone number is required', success: false });
   const result = await dispatchOtpSms(phone, role);
   return res.json(result);
 });
 
 // Mobile OTP Verification & Login/Signup Endpoint
-app.post('/api/mobile/auth/verify-otp', async (req, res) => {
-  const result: any = await processVerifyOtp(req.body);
+app.all(['/api/mobile/auth/verify-otp', '/api/mobile/auth/verify-otp/'], async (req, res) => {
+  const payload = { ...req.query, ...req.body };
+  const result: any = await processVerifyOtp(payload);
   if (result.status && result.status !== 200) {
     return res.status(result.status).json({ error: result.error, success: false });
   }
@@ -443,16 +446,18 @@ app.post('/api/mobile/auth/verify-otp', async (req, res) => {
 });
 
 // Web OTP Dispatch Endpoint
-app.post('/api/auth/send-otp', async (req, res) => {
-  const { phone, role = 'rider' } = req.body || {};
-  if (!phone) return res.status(400).json({ error: 'Mobile phone number is required' });
+app.all(['/api/auth/send-otp', '/api/auth/send-otp/'], async (req, res) => {
+  const phone = (req.body?.phone || req.query?.phone || '').toString().trim();
+  const role = (req.body?.role || req.query?.role || 'rider').toString().trim();
+  if (!phone) return res.status(400).json({ error: 'Mobile phone number is required', success: false });
   const result = await dispatchOtpSms(phone, role);
   return res.json(result);
 });
 
 // Web OTP Verification Endpoint
-app.post('/api/auth/verify-otp', async (req, res) => {
-  const result: any = await processVerifyOtp(req.body);
+app.all(['/api/auth/verify-otp', '/api/auth/verify-otp/'], async (req, res) => {
+  const payload = { ...req.query, ...req.body };
+  const result: any = await processVerifyOtp(payload);
   if (result.status && result.status !== 200) {
     return res.status(result.status).json({ error: result.error, success: false });
   }
@@ -1359,6 +1364,11 @@ app.get('/api/download/apk', (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
   res.setHeader('Cache-Control', 'no-cache');
   res.send(apkHeader);
+});
+
+// Catch-all for undefined API routes so they return JSON rather than falling through to Vite middleware
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: `API route ${req.method} ${req.path} not found`, success: false });
 });
 
 // =============================================================================
