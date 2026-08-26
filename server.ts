@@ -230,7 +230,18 @@ app.post('/api/mobile/auth/send-otp', async (req, res) => {
 
 // Mobile OTP Verification & Login/Signup Endpoint
 app.post('/api/mobile/auth/verify-otp', async (req, res) => {
-  const { phone, code, role = 'rider', name } = req.body || {};
+  const {
+    phone,
+    code,
+    role = 'rider',
+    name,
+    nationalId,
+    city,
+    email,
+    vehicleMake,
+    vehiclePlate,
+    vehicleCategory
+  } = req.body || {};
   if (!phone || !code) {
     return res.status(400).json({ error: 'Phone number and verification code are required' });
   }
@@ -279,47 +290,74 @@ app.post('/api/mobile/auth/verify-otp', async (req, res) => {
     }
   }
 
-  if (!existingRecord) {
-    if (effectiveRole === 'driver') {
-      existingRecord = serverDb.drivers.get(userId) || {
-        id: userId,
-        name: name || 'Driver ' + normalizedPhone.slice(-4),
-        phone: normalizedPhone,
-        role: 'driver',
-        isOnline: true,
-        kycStatus: 'verified',
-        rating: 4.9,
-        totalTrips: 12,
-        walletBalanceUSD: 20.00,
-        vehicle: {
-          make: 'Toyota',
-          model: 'Corolla',
-          plateNumber: 'AEG-2841',
-          color: 'White'
-        }
-      };
-      serverDb.drivers.set(userId, existingRecord);
-    } else {
-      existingRecord = serverDb.riders.get(userId) || {
-        id: userId,
-        name: name || 'Rider ' + normalizedPhone.slice(-4),
-        phone: normalizedPhone,
-        role: 'rider',
-        walletBalanceUSD: 15.00,
-        totalTrips: 3
-      };
-      serverDb.riders.set(userId, existingRecord);
-    }
+  if (effectiveRole === 'driver') {
+    const vMake = (vehicleMake || 'Toyota Passo').trim().split(' ')[0] || 'Toyota';
+    const vModel = (vehicleMake || 'Passo').trim().split(' ').slice(1).join(' ') || 'Passo';
+    const vPlate = (vehiclePlate || 'AFE-8921').trim().toUpperCase();
+    const vCat = vehicleCategory || 'economy';
+
+    existingRecord = serverDb.drivers.get(userId) || existingRecord || {
+      id: userId,
+      name: name || 'Driver ' + normalizedPhone.slice(-4),
+      phone: normalizedPhone,
+      role: 'driver',
+      isOnline: true,
+      kycStatus: 'verified',
+      rating: 4.9,
+      totalTrips: 0,
+      walletBalanceUSD: 20.00,
+      city: city || 'Harare',
+      nationalId: nationalId || '63-1284920-A63',
+      email: email || `${cleanDigits}@ridezw.local`,
+      vehicle: {
+        make: vMake,
+        model: vModel,
+        plateNumber: vPlate,
+        color: 'Silver',
+        category: vCat,
+        capacity: vCat === 'xl' ? 6 : vCat === 'motorbike' ? 1 : 4
+      }
+    };
+
+    if (name) existingRecord.name = name;
+    if (city) existingRecord.city = city;
+    if (nationalId) existingRecord.nationalId = nationalId;
+    if (email) existingRecord.email = email;
+    if (vehiclePlate) existingRecord.vehicle = { ...existingRecord.vehicle, plateNumber: vPlate };
+    if (vehicleMake) existingRecord.vehicle = { ...existingRecord.vehicle, make: vMake, model: vModel };
+    if (vehicleCategory) existingRecord.vehicle = { ...existingRecord.vehicle, category: vCat };
+
+    serverDb.drivers.set(userId, existingRecord);
+  } else {
+    existingRecord = serverDb.riders.get(userId) || existingRecord || {
+      id: userId,
+      name: name || 'Rider ' + normalizedPhone.slice(-4),
+      phone: normalizedPhone,
+      role: 'rider',
+      walletBalanceUSD: 15.00,
+      totalTrips: 0,
+      city: city || 'Harare',
+      email: email || `${cleanDigits}@ridezw.local`
+    };
+
+    if (name) existingRecord.name = name;
+    if (city) existingRecord.city = city;
+    if (email) existingRecord.email = email;
+
+    serverDb.riders.set(userId, existingRecord);
   }
 
   const user = {
     id: existingRecord.id || userId,
     phone: normalizedPhone,
-    email: `${cleanDigits}@ridezw.local`,
+    email: existingRecord.email || `${cleanDigits}@ridezw.local`,
     user_metadata: {
       role: effectiveRole,
-      name: name || existingRecord.name || (effectiveRole === 'driver' ? 'Driver Partner' : 'RideZW Rider'),
-      phone: normalizedPhone
+      name: existingRecord.name || (effectiveRole === 'driver' ? 'Driver Partner' : 'RideZW Rider'),
+      phone: normalizedPhone,
+      city: existingRecord.city,
+      nationalId: existingRecord.nationalId,
+      vehicle: existingRecord.vehicle
     }
   };
 

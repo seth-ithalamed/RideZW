@@ -134,10 +134,27 @@ export const ridezwApi = {
     );
   },
 
-  verifyOtp: async (phone: string, code: string, role: 'rider' | 'driver' = 'driver', name?: string) => {
+  verifyOtp: async (
+    phone: string,
+    code: string,
+    role: 'rider' | 'driver' = 'driver',
+    registrationDetails?: {
+      name?: string;
+      city?: string;
+      nationalId?: string;
+      email?: string;
+      vehicleMake?: string;
+      vehiclePlate?: string;
+      vehicleCategory?: string;
+    } | string
+  ) => {
+    const payload = typeof registrationDetails === 'string'
+      ? { phone, code, role, name: registrationDetails }
+      : { phone, code, role, ...(registrationDetails || {}) };
+
     const r = await request<any>('/api/mobile/auth/verify-otp', {
       method: 'POST',
-      body: JSON.stringify({ phone, code, role, name })
+      body: JSON.stringify(payload)
     });
     if (r.session?.access_token) {
       await SecureStore.setItemAsync(ACCESS, r.session.access_token);
