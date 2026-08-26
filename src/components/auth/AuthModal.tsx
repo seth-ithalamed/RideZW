@@ -133,11 +133,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   if (!isOpen) return null;
 
   const getFullPhone = () => {
+    let raw = rawPhone.trim().replace(/[\s\-()]/g, '');
     const dial = customCountryCode.trim().startsWith('+')
       ? customCountryCode.trim()
       : `+${customCountryCode.trim()}`;
-    const cleanNum = rawPhone.trim().replace(/^0+/, '');
-    return `${dial}${cleanNum}`;
+    const dialDigits = dial.replace(/\D/g, '');
+
+    // Remove leading pluses or zeros
+    raw = raw.replace(/^\++/, '').replace(/^0+/, '');
+
+    // If user typed the country dial code into the input, strip it so it doesn't duplicate (+27 + 27696... -> +27696...)
+    if (raw.startsWith(dialDigits)) {
+      raw = raw.slice(dialDigits.length).replace(/^0+/, '');
+    }
+    return `${dial}${raw}`;
   };
 
   const handleRoleChange = (role: 'rider' | 'driver' | 'admin') => {

@@ -83,11 +83,20 @@ app.use('/api', (req, res, next) => {
 });
 
 function normalizePhoneForTwilio(phone: string): string {
-  let cleaned = phone.trim().replace(/[\s\-()]/g, '');
+  let cleaned = String(phone || '').trim().replace(/[\s\-()]/g, '');
+  // Remove duplicate leading pluses: e.g. "+27+27..." -> "+2727..."
+  cleaned = cleaned.replace(/\++/g, '+');
+  if (cleaned.startsWith('+27+27')) cleaned = '+27' + cleaned.slice(6);
+  if (cleaned.startsWith('+263+263')) cleaned = '+263' + cleaned.slice(8);
+  if (cleaned.startsWith('+2727') && cleaned.length >= 13) cleaned = '+27' + cleaned.slice(5);
+  if (cleaned.startsWith('+263263') && cleaned.length >= 14) cleaned = '+263' + cleaned.slice(7);
+
   if (cleaned.startsWith('0')) {
     // Format Zimbabwean mobile numbers: 07XXXXXXXX -> +2637XXXXXXXX
     cleaned = '+263' + cleaned.slice(1);
   } else if (cleaned.startsWith('263')) {
+    cleaned = '+' + cleaned;
+  } else if (cleaned.startsWith('27') && !cleaned.startsWith('+')) {
     cleaned = '+' + cleaned;
   } else if (!cleaned.startsWith('+')) {
     cleaned = '+' + cleaned;
