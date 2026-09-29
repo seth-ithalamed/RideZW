@@ -67,38 +67,27 @@ export const DriverDebtSettlementModal: React.FC<DriverDebtSettlementModalProps>
     return `$${usd.toFixed(2)} USD`;
   };
 
-  const handleStartPayment = () => {
-    if (amountUSD <= 0) {
-      alert('Please enter a valid payment amount.');
-      return;
-    }
-
+  const handleStartPayment = async () => {
+    if (amountUSD <= 0) { alert('Please enter a valid payment amount.'); return; }
     setStep('processing');
-
-    if (method === 'ecocash') {
-      setProcessingMsg(`Sending EcoCash USSD prompt to ${phone}... Please check your phone.`);
-    } else if (method === 'onemoney') {
-      setProcessingMsg(`Sending OneMoney *111# PIN push prompt to ${phone}...`);
-    } else if (method === 'innbucks') {
-      setProcessingMsg(`Verifying InnBucks authorization voucher ${innbucksCode}...`);
-    } else if (method === 'card') {
-      setProcessingMsg(`Encrypting 3D-Secure transaction with ZimSwitch / VISA gateway...`);
-    } else if (method === 'clicknpay') {
-      setProcessingMsg(`Connecting to ClicknPay OpenAPI gateway...`);
-    } else if (method === 'zipit_bank') {
-      setProcessingMsg(`Verifying ZIPIT interbank settlement with ref: ${zipitRef}...`);
-    } else {
-      setProcessingMsg(`Authorizing payment with RideZW automated settlement desk...`);
-    }
-
-    // Interactive realistic simulation
-    setTimeout(() => {
-      const txRef = `SETTLE-${method.toUpperCase()}-${Math.floor(100000 + Math.random() * 900000)}`;
-      store.driverSettleDebt(driver.id, amountUSD, method);
-      setCompletedTxRef(txRef);
-      setStep('success');
-      confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } });
-    }, 1800);
+    setProcessingMsg('Creating a secure payment order…');
+    try {
+      const order = await store.initiatePaymentOrder({ amount: amountUSD, customerPhone: phone, description: 'RideZW driver debt settlement', purpose: 'driver_debt', relatedId: driver.id, currency: selectedCurrency, channel: method, productName: 'Driver debt settlement' });
+      if (!order.success || !order.clientReference) throw new Error(order.error || 'Payment order could not be created');
+      if (order.paymeURL) window.open(order.paymeURL, '_blank', 'noopener,noreferrer');
+      setProcessingMsg('Payment created. Waiting for confirmed settlement…');
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        const status = await store.pollPaymentStatus(order.clientReference);
+        if (status.status === 'SUCCESS') {
+          const txRef = order.clientReference;
+          store.driverSettleDebt(driver.id, amountUSD, method);
+          setCompletedTxRef(txRef); setStep('success'); confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } }); return;
+        }
+        if (status.status === 'FAILED') throw new Error('Payment was declined or failed');
+      }
+      throw new Error('Payment is still pending. Do not retry; check the transaction status later.');
+    } catch (error) { setProcessingMsg(error instanceof Error ? error.message : 'Payment could not be confirmed'); setStep('input'); }
   };
 
   const handleFinish = () => {
