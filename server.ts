@@ -1421,10 +1421,18 @@ app.post('/api/notifications/send-push', async (req, res) => {
 });
 
 // 14. ClicknPay / EcoCash Payment Webhook
-app.post('/api/webhooks/clicknpay', (req, res) => {
-  const payload = req.body;
-  console.log('[CLICKNPAY WEBHOOK RECEIVED]:', JSON.stringify(payload));
-  res.json({ received: true, status: 'processed' });
+app.post('/api/webhooks/clicknpay', async (req, res) => {
+  const payload = req.body || {};
+  const clientReference = payload.clientReference || payload.client_reference || payload.reference;
+  if (!clientReference) return res.status(400).json({ received: false, error: 'clientReference is required' });
+  const raw = String(payload.status || payload.paymentStatus || 'PENDING').toUpperCase();
+  const status = raw === 'SUCCESS' || raw === 'PAID' || raw === 'COMPLETED' ? 'SUCCESS' : raw === 'FAILED' || raw === 'CANCELLED' ? 'FAILED' : 'PENDING';
+  try {
+    const sb = getServerSupabase(); if (!sb) return res.status(503).json({ received: false, error: 'Database unavailable' });
+    const { error } = await sb.from('payment_transactions').update({ status, gateway_payload: payload, updated_at: new Date().toISOString(), completed_at: status === 'SUCCESS' ? new Date().toISOString() : null }).eq('client_reference', clientReference);
+    if (error) return res.status(500).json({ received: false, error: 'Payment webhook persistence failed' });
+    return res.json({ received: true, status });
+  } catch (error: any) { return res.status(500).json({ received: false, error: error.message }); }
 });
 
 // 15. Android APK & Mobile App Package Download Endpoint
