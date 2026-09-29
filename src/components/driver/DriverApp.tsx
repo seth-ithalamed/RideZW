@@ -183,6 +183,23 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
     }
   };
 
+  const handleCompleteDigitalTrip = async () => {
+    if (!activeTrip || activeTrip.paymentMethod === 'cash') return;
+    try {
+      const order = await store.initiatePaymentOrder({ amount: activeTrip.agreedFareUSD, customerPhone: activeTrip.riderPhone, description: 'RideZW trip ' + activeTrip.id, purpose: 'ride', relatedId: activeTrip.id, currency: 'USD', channel: activeTrip.paymentMethod, productName: 'Ride fare' });
+      if (!order.success || !order.clientReference) throw new Error(order.error || 'Payment order could not be created');
+      if (order.paymeURL) window.open(order.paymeURL, '_blank', 'noopener,noreferrer');
+      dialog.alert('Payment started', 'Complete the payment in the payment window. RideZW will only complete the trip after the gateway confirms SUCCESS.', 'info');
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        const status = await store.pollPaymentStatus(order.clientReference);
+        if (status.status === 'SUCCESS') { store.completeTrip(); confetti({ particleCount: 50, spread: 60, origin: { y: 0.6 } }); return; }
+        if (status.status === 'FAILED') throw new Error('Payment was declined or failed');
+      }
+      throw new Error('Payment is still pending. The trip was not completed.');
+    } catch (error: any) { dialog.alert('Payment not confirmed', error.message || 'Payment could not be confirmed', 'warning'); }
+  };
+
   const handleConfirmCashCollection = () => {
     store.completeTrip(activeTrip?.agreedFareUSD);
     setShowCashCollectModal(false);
@@ -678,7 +695,7 @@ export const DriverApp: React.FC<DriverAppProps> = ({ currency, language }) => {
                       </button>
                     ) : (
                       <button
-                        onClick={() => store.completeTrip()}
+                        onClick={handleCompleteDigitalTrip}
                         className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded shadow-xs"
                       >
                         Complete In-App Digital Trip (${activeTrip.agreedFareUSD.toFixed(2)})
