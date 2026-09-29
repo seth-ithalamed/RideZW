@@ -75,7 +75,7 @@ function getServerSupabase(): SupabaseClient | null {
   }
 }
 
-const databaseBackedPaths = ['/state','/trips','/drivers','/riders','/pricing','/settings','/sos','/ledger','/sessions','/seed','/mobile/trips','/mobile/driver','/payments'];
+const databaseBackedPaths = ['/state','/trips','/drivers','/riders','/pricing','/settings','/sos','/ledger','/sessions','/seed','/mobile/trips','/mobile/driver','/payments','/mobility','/provider'];
 app.use('/api', (req, res, next) => {
   const requiresDatabase = databaseBackedPaths.some(prefix => req.path === prefix || req.path.startsWith(prefix + '/'));
   if (requiresDatabase && !getServerSupabase()) return res.status(503).json({ error: 'Database unavailable. Configure SUPABASE_URL and a server-side Supabase key.' });
@@ -877,6 +877,23 @@ app.post('/api/payments/webhook', async (req, res) => {
 
   return res.json({ received: true, clientReference, status });
 });
+
+
+
+function transitProvider(user: any): boolean { return ['driver','fleet_owner','admin'].includes(user?.user_metadata?.role); }
+app.get('/api/mobility/departures', async (req, res) => {
+  const sb=getServerSupabase(); if(!sb) return res.status(503).json({error:'Database unavailable'});
+  let query=sb.from('transit_departures').select('*, transit_routes(*), transit_vehicles(*)').in('status',['scheduled','boarding']).order('departure_at',{ascending:true}).limit(100);
+  if(req.query.serviceType) query=query.eq('service_type',String(req.query.serviceType));
+  if(req.query.airportCode) query=query.eq('airport_code',String(req.query.airportCode));
+  const {data,error}=await query; if(error) return res.status(500).json({error:'Could not load departures'}); return res.json({departures:data||[]});
+});
+app.get('/api/mobility/bookings', async (req,res)=>{const user=await requireMobileUser(req,res);if(!user)return;const sb=getServerSupabase();const{data,error}=await sb.from('transit_bookings').select('*, transit_departures(*)').eq('passenger_id',user.id).order('created_at',{ascending:false});if(error)return res.status(500).json({error:'Could not load bookings'});return res.json({bookings:data||[]});});
+app.post('/api/mobility/bookings', async (req,res)=>{const user=await requireMobileUser(req,res);if(!user)return;const b=req.body||{};const sb=getServerSupabase();try{const{data,error}=await sb.rpc('reserve_transit_booking',{p_passenger_id:user.id,p_departure_id:b.departureId,p_service_type:b.serviceType,p_seats:Number(b.seats||1),p_passenger_name:b.passengerName,p_passenger_phone:b.passengerPhone,p_luggage_count:Number(b.luggageCount||0),p_welcome_board_name:b.welcomeBoardName||null,p_payment_method:b.paymentMethod});if(error){const code=String(error.message||'');const status=code.includes('CAPACITY_EXCEEDED')?409:400;return res.status(status).json({error:code.includes('CAPACITY_EXCEEDED')?'No seats remain for this departure':error.message});}return res.status(201).json(data);}catch(error:any){return res.status(500).json({error:error.message});}});
+app.post('/api/provider/departures', async (req,res)=>{const user=await requireMobileUser(req,res);if(!user||!transitProvider(user))return res.status(403).json({error:'Provider role required'});const sb=getServerSupabase();const b=req.body||{};const row={...b,provider_id:user.id,capacity_total:Number(b.capacityTotal),seats_reserved:0,standing_passengers_allowed:false};delete row.capacityTotal;const{data,error}=await sb.from('transit_departures').insert(row).select().single();if(error)return res.status(400).json({error:error.message});return res.status(201).json({departure:data});});
+app.get('/api/provider/departures', async (req,res)=>{const user=await requireMobileUser(req,res);if(!user||!transitProvider(user))return res.status(403).json({error:'Provider role required'});const sb=getServerSupabase();const{data,error}=await sb.from('transit_departures').select('*, transit_bookings(*)').eq('provider_id',user.id).order('departure_at',{ascending:true});if(error)return res.status(500).json({error:'Could not load provider manifest'});return res.json({departures:data||[]});});
+app.patch('/api/provider/bookings/:id/status', async(req,res)=>{const user=await requireMobileUser(req,res);if(!user||!transitProvider(user))return res.status(403).json({error:'Provider role required'});const sb=getServerSupabase();const next=String(req.body?.status||'');if(!['assigned','boarding','boarded','completed','cancelled','no_show'].includes(next))return res.status(400).json({error:'Invalid booking status'});const{data,error}=await sb.from('transit_bookings').update({status:next,driver_id:user.id,updated_at:new Date().toISOString()}).eq('id',req.params.id).select().single();if(error)return res.status(400).json({error:error.message});return res.json({booking:data});});
+app.post('/api/provider/bookings/:id/board', async(req,res)=>{const user=await requireMobileUser(req,res);if(!user||!transitProvider(user))return res.status(403).json({error:'Provider role required'});const seat=Number(req.body?.seatNumber);if(!Number.isInteger(seat)||seat<1)return res.status(400).json({error:'Valid seatNumber required'});const sb=getServerSupabase();const{data,error}=await sb.from('transit_boarding_events').insert({booking_id:req.params.id,seat_number:seat,scanned_by:user.id}).select().single();if(error)return res.status(409).json({error:'Seat already boarded or booking unavailable'});await sb.from('transit_bookings').update({status:'boarded',updated_at:new Date().toISOString()}).eq('id',req.params.id);return res.status(201).json({boardingEvent:data});});
 
 app.get('/api/health', (req, res) => {
   const sb = getServerSupabase();
