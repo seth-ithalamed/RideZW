@@ -13,6 +13,8 @@ import { DriverApp } from './components/driver/DriverApp';
 import { AdminDashboard } from './components/admin/AdminDashboard';
 import { AuthModal } from './components/auth/AuthModal';
 import { DownloadAppModal } from './components/common/DownloadAppModal';
+import { TransitHub } from './components/transit/TransitHub';
+import { ProviderTransitConsole } from './components/transit/ProviderTransitConsole';
 import { CustomDialogModal } from './components/common/CustomDialogModal';
 import { Currency, Language, NavigationTab } from './types';
 
@@ -77,11 +79,11 @@ export default function App() {
         )}
 
         {state.activeTab === 'rider' && (
-          <RiderApp currency={currency} language={language} />
+          <><RiderApp currency={currency} language={language} /><TransitHub /></>
         )}
 
         {state.activeTab === 'driver' && (
-          <DriverApp currency={currency} language={language} />
+          <><DriverApp currency={currency} language={language} /><ProviderTransitConsole /></>
         )}
 
         {state.activeTab === 'admin' && (
