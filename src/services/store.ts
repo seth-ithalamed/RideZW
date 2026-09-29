@@ -1187,7 +1187,9 @@ class Store {
     purpose?: string;
     relatedId?: string;
     currency?: 'USD' | 'ZWG';
-  }): Promise<{ success: boolean; clientReference: string; paymeURL?: string; isSimulated?: boolean; error?: string }> {
+    channel?: PaymentMethod;
+    productName?: string;
+  }): Promise<{ success: boolean; clientReference: string; paymeURL?: string; status?: 'PENDING' | 'SUCCESS' | 'FAILED'; error?: string }> {
     try {
       const res = await fetch('/api/payments/orders', {
         method: 'POST',
