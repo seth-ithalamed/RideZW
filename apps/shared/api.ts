@@ -81,59 +81,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       }
     });
   } catch (netErr: any) {
-    console.warn(`[Mobile API Network Warning] ${path}:`, netErr.message);
-
-    // If calling OTP endpoints and network fails, provide seamless offline fallback
-    if (path.includes('/send-otp')) {
-      const parsedBody = options.body ? JSON.parse(options.body as string) : {};
-      const phone = parsedBody.phone || '+263771234567';
-      return {
-        success: true,
-        message: `Verification code generated for ${phone}`,
-        calledTwilio: false,
-        isSimulated: true,
-        code: '123456',
-        targetPhone: phone
-      } as any;
-    }
-
-    if (path.includes('/verify-otp')) {
-      const parsedBody = options.body ? JSON.parse(options.body as string) : {};
-      const phone = parsedBody.phone || '+263771234567';
-      const role = parsedBody.role || 'rider';
-      const name = parsedBody.name || (role === 'driver' ? 'Driver Partner' : 'RideZW Rider');
-      const cleanDigits = phone.replace(/\D/g, '').slice(-8) || 'user';
-      const userId = (role === 'driver' ? 'drv_' : 'rdr_') + cleanDigits;
-
-      const user = {
-        id: userId,
-        phone,
-        email: parsedBody.email || `${cleanDigits}@ridezw.local`,
-        user_metadata: {
-          role,
-          name,
-          phone,
-          city: parsedBody.city || 'Harare',
-          nationalId: parsedBody.nationalId || '63-1284920-A63',
-          vehicle: {
-            make: parsedBody.vehicleMake || 'Toyota Passo',
-            plateNumber: parsedBody.vehiclePlate || 'AFE-8921',
-            category: parsedBody.vehicleCategory || 'economy'
-          }
-        }
-      };
-
-      const sessionToken = `rzw_mobile_${Date.now()}`;
-      await SecureStore.setItemAsync(ACCESS, sessionToken).catch(() => {});
-      return {
-        success: true,
-        user,
-        role,
-        session: { access_token: sessionToken }
-      } as any;
-    }
-
-    throw new Error(`Unable to connect to RideZW server at ${baseUrl || 'endpoint'}. Please check internet connection.`);
+    console.warn('[Mobile API Network Error] ' + path + ':', (netErr as any)?.message || netErr);
+    throw new Error('Unable to connect to RideZW. Check your connection and try again.');
   }
 
   // Auto-attempt token refresh if 401 Unauthorized
@@ -182,7 +131,7 @@ export const ridezwApi = {
   
   // Mobile Authentication
   sendOtp: async (phone: string, role: 'rider' | 'driver' = 'rider') => {
-    return request<{ success: boolean; message: string; isSimulated?: boolean; code?: string; targetPhone?: string }>(
+    return request<{ success: boolean; message: string; targetPhone?: string }>(
       '/api/mobile/auth/send-otp',
       {
         method: 'POST',
@@ -203,16 +152,18 @@ export const ridezwApi = {
       vehicleMake?: string;
       vehiclePlate?: string;
       vehicleCategory?: string;
-    } | string
+    } | string,
+    flow: 'signin' | 'signup' = 'signin'
   ) => {
     const payload = typeof registrationDetails === 'string'
-      ? { phone, code, role, name: registrationDetails }
-      : { phone, code, role, ...(registrationDetails || {}) };
+      ? { phone, code, role, flow, name: registrationDetails }
+      : { phone, code, role, flow, ...(registrationDetails || {}) };
 
     const r = await request<any>('/api/mobile/auth/verify-otp', {
       method: 'POST',
       body: JSON.stringify(payload)
     });
+    if (!r.session?.access_token || !r.user) throw new Error('The server did not return a verified RideZW session');
     if (r.session?.access_token) {
       await SecureStore.setItemAsync(ACCESS, r.session.access_token);
       if (r.session?.refresh_token) {

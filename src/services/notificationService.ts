@@ -1,3 +1,4 @@
+import { setAccessToken } from './authSession';
 /**
  * Notification and SMS OTP Service
  * Dispatches requests to server-side endpoints (/api/auth/send-otp, /api/notifications/send-push)
@@ -10,53 +11,7 @@
  * Handles PWA Background Push Notifications, Service Worker registration, and Audio Alerts
  */
 
-export interface OtpResponse {
-  success: boolean;
-  message: string;
-  isSimulated?: boolean;
-  calledTwilio?: boolean;
-  code?: string;
-  dispatchedMessage?: string;
-  targetPhone?: string;
-  twilioSid?: string;
-  twilioStatus?: string;
-  twilioFrom?: string;
-  twilioError?: string;
-  twilioRequestPayload?: {
-    to: string;
-    from: string;
-    body: string;
-    accountSidMasked?: string | null;
-  };
-  rawTwilioResponse?: {
-    sid: string;
-    status: string;
-    to: string;
-    from: string;
-    body: string;
-    dateCreated?: string;
-    dateSent?: string;
-    direction?: string;
-    price?: string | null;
-    priceUnit?: string | null;
-    errorCode?: number | null;
-    errorMessage?: string | null;
-    uri?: string;
-  };
-  rawTwilioError?: {
-    httpStatus: number;
-    twilioErrorCode?: number | null;
-    message: string;
-    moreInfo?: string;
-    details?: any;
-  };
-  missingConfig?: string[];
-  userFoundInDb?: boolean;
-  dbAccountType?: 'driver' | 'rider';
-  registeredName?: string;
-  dbRecordId?: string;
-  error?: string;
-}
+export interface OtpResponse { success: boolean; message: string; targetPhone?: string; error?: string; }
 
 let deferredPrompt: any = null;
 
@@ -199,200 +154,45 @@ export function isPWAInstallable(): boolean {
   return !!deferredPrompt;
 }
 
-// Fallback in-memory OTP store for offline resilience
-const clientOtpStore: Record<string, { code: string; expiresAt: number }> = {};
-
 function getBackendApiUrl(path: string): string {
-  // If running on Vercel or localhost or mobile, check for configured backend URL or default to Render backend
-  const customUrl = (typeof process !== 'undefined' && process.env?.VITE_API_URL) ||
-    (typeof window !== 'undefined' && (window as any).__RIDEZW_API_URL__) ||
-    '';
-  if (customUrl) {
-    return `${customUrl.replace(/\/$/, '')}${path}`;
-  }
-  // Standard relative path (handled by Vite in dev or vercel.json rewrite to Render)
-  return path;
+  const customUrl = (typeof process !== 'undefined' && process.env?.VITE_API_URL) || (typeof window !== 'undefined' && (window as any).__RIDEZW_API_URL__) || '';
+  return customUrl ? customUrl.replace(/\/$/, '') + path : path;
 }
 
-export async function fetchTwilioStatus(): Promise<{
-  isConfigured: boolean;
-  accountSidMasked: string | null;
-  hasAuthToken: boolean;
-  fromNumber: string | null;
-  source: string;
-}> {
-  try {
-    const res = await fetch(getBackendApiUrl('/api/auth/twilio-status'));
-    return await res.json();
-  } catch (e) {
-    return {
-      isConfigured: false,
-      accountSidMasked: null,
-      hasAuthToken: false,
-      fromNumber: null,
-      source: 'offline'
-    };
-  }
+export async function fetchTwilioStatus(): Promise<{ isConfigured: boolean; accountSidMasked: string | null; hasAuthToken: boolean; fromNumber: string | null; source: string }> {
+  const response = await fetch(getBackendApiUrl('/api/auth/twilio-status'));
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Could not load SMS service status');
+  return data;
 }
 
-export async function updateServerTwilioConfig(config: {
-  accountSid?: string;
-  authToken?: string;
-  fromNumber?: string;
-}): Promise<any> {
-  const res = await fetch(getBackendApiUrl('/api/auth/twilio-config'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config)
-  });
-  return await res.json();
+export async function updateServerTwilioConfig(config: { accountSid?: string; authToken?: string; fromNumber?: string }): Promise<any> {
+  const response = await fetch(getBackendApiUrl('/api/auth/twilio-config'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Could not update SMS configuration');
+  return data;
 }
 
-export async function sendDirectTestSms(params: {
-  phone: string;
-  message?: string;
-  twilioConfig?: { accountSid?: string; authToken?: string; fromNumber?: string };
-}): Promise<any> {
-  const res = await fetch(getBackendApiUrl('/api/auth/test-sms'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params)
-  });
-  return await res.json();
+export async function sendDirectTestSms(params: { phone: string; message?: string; twilioConfig?: { accountSid?: string; authToken?: string; fromNumber?: string } }): Promise<any> {
+  const response = await fetch(getBackendApiUrl('/api/auth/test-sms'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Test SMS is unavailable');
+  return data;
 }
 
-export async function requestSmsOtp(
-  phone: string,
-  role?: 'driver' | 'rider'
-): Promise<OtpResponse> {
-  try {
-    let res = await fetch(getBackendApiUrl('/api/auth/send-otp'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, role })
-    });
-
-    // If local path failed or returned 404/405/500, attempt direct call to Render backend
-    if (!res.ok && typeof window !== 'undefined' && !window.location.hostname.includes('onrender.com')) {
-      try {
-        const directRes = await fetch(`https://ridezw-platform.onrender.com/api/auth/send-otp`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phone, role })
-        });
-        if (directRes.ok) {
-          res = directRes;
-        }
-      } catch {}
-    }
-
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      if (errData && (errData.message || errData.error) && res.status === 400) {
-        return {
-          success: false,
-          calledTwilio: false,
-          message: errData.error || errData.message,
-          error: errData.error || 'Request error'
-        };
-      }
-      return {
-        success: true,
-        calledTwilio: false,
-        isSimulated: true,
-        message: `Verification code dispatched to ${phone}`,
-        targetPhone: phone,
-        code: '123456'
-      };
-    }
-    const data = await res.json();
-    return data;
-  } catch (err: any) {
-    // Attempt fallback directly to Render backend
-    try {
-      const directRes = await fetch(`https://ridezw-platform.onrender.com/api/auth/send-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone, role })
-      });
-      if (directRes.ok) {
-        return await directRes.json();
-      }
-    } catch {}
-
-    console.warn('Network error requesting OTP, providing fallback simulation:', err);
-    return {
-      success: true,
-      calledTwilio: false,
-      isSimulated: true,
-      message: `Verification code generated for ${phone}`,
-      targetPhone: phone,
-      code: '123456'
-    };
-  }
+export async function requestSmsOtp(phone: string, role: 'driver' | 'rider' = 'rider'): Promise<OtpResponse> {
+  const response = await fetch(getBackendApiUrl('/api/auth/send-otp'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone, role }) });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.success !== true) throw new Error(data.error || data.message || 'Could not send verification code');
+  return data as OtpResponse;
 }
 
-export async function verifySmsOtp(
-  phone: string,
-  code: string,
-  role?: 'driver' | 'rider',
-  regDetails?: any
-): Promise<{ success: boolean; message?: string; error?: string; userProfile?: any; user?: any; session?: any; role?: string }> {
-  try {
-    let res = await fetch(getBackendApiUrl('/api/auth/verify-otp'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, code, role, ...(regDetails || {}) })
-    });
-
-    if (!res.ok && typeof window !== 'undefined' && !window.location.hostname.includes('onrender.com')) {
-      try {
-        const directRes = await fetch(`https://ridezw-platform.onrender.com/api/auth/verify-otp`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phone, code, role, ...(regDetails || {}) })
-        });
-        if (directRes.ok) {
-          res = directRes;
-        }
-      } catch {}
-    }
-
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      if (String(code).trim() === '123456') {
-        return {
-          success: true,
-          message: 'Phone number verified successfully',
-          role: role || 'rider'
-        };
-      }
-      return {
-        success: false,
-        error: errData.error || errData.message || 'Invalid verification code. Please try again.'
-      };
-    }
-    const data = await res.json();
-    return data;
-  } catch (err: any) {
-    try {
-      const directRes = await fetch(`https://ridezw-platform.onrender.com/api/auth/verify-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone, code, role, ...(regDetails || {}) })
-      });
-      if (directRes.ok) {
-        return await directRes.json();
-      }
-    } catch {}
-
-    console.warn('Network error verifying OTP, fallback verification:', err);
-    return {
-      success: true,
-      message: 'Verified successfully',
-      role: role || 'rider'
-    };
-  }
+export async function verifySmsOtp(phone: string, code: string, role: 'driver' | 'rider' = 'rider', regDetails?: any, flow: 'signin' | 'signup' = 'signin'): Promise<{ success: boolean; message?: string; error?: string; userProfile?: any; user?: any; session?: any; role?: string }> {
+  const response = await fetch(getBackendApiUrl('/api/auth/verify-otp'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone, code, role, flow, ...(regDetails || {}) }) });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.success !== true || !data.session?.access_token || !data.userProfile) throw new Error(data.error || data.message || 'Could not verify code or load profile');
+  setAccessToken(data.session.access_token);
+  return data;
 }
 
 export async function sendPushNotification(params: {

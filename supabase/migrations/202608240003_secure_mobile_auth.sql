@@ -23,13 +23,26 @@ create table if not exists public.ridezw_profiles (
   updated_at timestamptz not null default now()
 );
 
+create or replace function public.issue_ridezw_otp(p_phone text,p_role text,p_code_hash text)
+returns text language plpgsql security definer set search_path = '' as $$
+declare v_created_at timestamptz;
+begin
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext(p_phone), pg_catalog.hashtext(p_role));
+  select created_at into v_created_at from public.ridezw_otp_challenges where phone=p_phone and role=p_role for update;
+  if found and v_created_at > pg_catalog.now() - interval '30 seconds' then return 'cooldown'; end if;
+  insert into public.ridezw_otp_challenges(phone,role,code_hash,expires_at,attempts,created_at)
+  values(p_phone,p_role,p_code_hash,pg_catalog.now()+interval '5 minutes',0,pg_catalog.now())
+  on conflict(phone,role) do update set code_hash=excluded.code_hash,expires_at=excluded.expires_at,attempts=0,created_at=excluded.created_at;
+  return 'issued';
+end; $$;
+
 create or replace function public.consume_ridezw_otp(p_phone text,p_role text,p_code_hash text)
-returns text language plpgsql security definer set search_path=public as $$
-declare c public.ridezw_otp_challenges;
+returns text language plpgsql security definer set search_path = '' as $$
+declare c public.ridezw_otp_challenges%rowtype;
 begin
   select * into c from public.ridezw_otp_challenges where phone=p_phone and role=p_role for update;
   if not found then return 'missing'; end if;
-  if c.expires_at < now() then delete from public.ridezw_otp_challenges where phone=p_phone and role=p_role; return 'expired'; end if;
+  if c.expires_at < pg_catalog.now() then delete from public.ridezw_otp_challenges where phone=p_phone and role=p_role; return 'expired'; end if;
   if c.attempts >= 5 then delete from public.ridezw_otp_challenges where phone=p_phone and role=p_role; return 'locked'; end if;
   if c.code_hash <> p_code_hash then update public.ridezw_otp_challenges set attempts=attempts+1 where phone=p_phone and role=p_role; return 'invalid'; end if;
   delete from public.ridezw_otp_challenges where phone=p_phone and role=p_role;
@@ -38,4 +51,9 @@ end; $$;
 
 alter table public.ridezw_otp_challenges enable row level security;
 alter table public.ridezw_profiles enable row level security;
-revoke all on public.ridezw_otp_challenges, public.ridezw_profiles from anon, authenticated;
+revoke all on table public.ridezw_otp_challenges, public.ridezw_profiles from public, anon, authenticated;
+grant all on table public.ridezw_otp_challenges, public.ridezw_profiles to service_role;
+revoke all on function public.issue_ridezw_otp(text,text,text) from public, anon, authenticated;
+revoke all on function public.consume_ridezw_otp(text,text,text) from public, anon, authenticated;
+grant execute on function public.issue_ridezw_otp(text,text,text) to service_role;
+grant execute on function public.consume_ridezw_otp(text,text,text) to service_role;

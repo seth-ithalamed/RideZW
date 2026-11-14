@@ -64,6 +64,7 @@ import {
   syncUserSessionToSupabase,
   fetchAllDataFromSupabase
 } from './supabaseService';
+import { clearAccessToken } from './authSession';
 import {
   persistTripToBackend,
   persistDriverToBackend,
@@ -523,7 +524,59 @@ class Store {
     return this.state.authenticatedUser || null;
   }
 
+  // Update only the in-memory UI context from a profile returned by the authenticated backend.
+  public acceptAuthenticatedProfile(role: 'rider' | 'driver', profile: any): void {
+    if (!profile?.auth_user_id || !profile?.phone || !profile?.display_name) throw new Error('The server returned an incomplete account profile');
+    const id = String(profile.auth_user_id);
+    const name = String(profile.display_name);
+    const phone = String(profile.phone);
+    const city = String(profile.city || '');
+    const registeredAt = String(profile.created_at || new Date().toISOString());
+    if (role === 'rider') {
+      const rider: RiderProfile = {
+        id, name, phone, email: profile.email || undefined, nationalId: profile.national_id || undefined, avatarUrl: '',
+        rating: 0, totalTrips: 0, emergencyContactName: '', emergencyContactPhone: '', preferredLanguage: 'en',
+        preferredPaymentMethod: 'cash', referralCode: '', walletBalance: 0, city,
+        status: profile.status === 'suspended' ? 'suspended' : 'active', accountType: 'standard', registeredAt
+      };
+      this.state.rider = rider;
+      this.state.riders = [rider, ...this.state.riders.filter((item) => item.id !== id)];
+    } else {
+      const v = profile.vehicle_data && typeof profile.vehicle_data === 'object' ? profile.vehicle_data : {};
+      const category = (v.category || 'economy') as VehicleCategory;
+      const driver: DriverProfile = {
+        id, name, phone, nationalId: profile.national_id || '', email: profile.email || '', avatarUrl: '', kycStatus: profile.status === 'active' ? 'approved' : profile.status === 'suspended' ? 'suspended' : 'pending',
+        vehicle: { id: '', driverId: id, make: v.make || '', model: v.model || '', year: 0, color: '', plateNumber: v.plateNumber || '', category, capacity: Number(v.capacity || 0) },
+        rating: 0, totalTrips: 0, isOnline: false, currentLat: 0, currentLng: 0, city, subscriptionTier: 'commission',
+        walletBalance: 0, cashDebtCeiling: 0, isBlockedDueToDebt: false, documents: [], governmentPermitStatus: 'not_found', registeredAt
+      };
+      this.state.drivers = [driver, ...this.state.drivers.filter((item) => item.id !== id)];
+      this.state.activeDriverId = id;
+    }
+    this.state.authenticatedUser = { role, id, name, emailOrPhone: phone, sessionId: 'supabase:' + id, deviceId: getOrCreateDeviceId(), loginTime: new Date().toISOString() };
+    this.state.activeTab = role;
+    this.notify();
+  }
+
+  public acceptAuthenticatedAdmin(authUser: any): void {
+    if (!authUser?.id || authUser?.app_metadata?.role !== 'admin') throw new Error('The server did not verify administrator access');
+    const metadata = authUser.app_metadata || {};
+    const email = String(authUser.email || '');
+    const name = String(authUser.user_metadata?.name || email || 'Administrator');
+    const admin: AdminUser = {
+      id: authUser.id, name, email, phone: authUser.phone || '', role: (metadata.adminRole || 'operations_manager') as AdminRole,
+      department: metadata.department || '', avatarUrl: '', status: 'active',
+      permissions: Array.isArray(metadata.permissions) ? metadata.permissions : [],
+      createdAt: authUser.created_at || new Date().toISOString(), isRootSuperAdmin: false
+    };
+    this.state.adminUsers = [admin, ...this.state.adminUsers.filter((item) => item.id !== admin.id)];
+    this.state.authenticatedUser = { role: 'admin', id: admin.id, name: admin.name, emailOrPhone: admin.email, sessionId: 'supabase:' + admin.id, deviceId: getOrCreateDeviceId(), loginTime: new Date().toISOString() };
+    this.state.activeTab = 'admin';
+    this.notify();
+  }
+
   public logout() {
+    clearAccessToken();
     const currentAuth = this.state.authenticatedUser;
     if (currentAuth && this.state.activeSessions) {
       delete this.state.activeSessions[currentAuth.id];
