@@ -28,7 +28,8 @@ import {
 import { store } from '../../services/store';
 import { CoverageCity } from '../../types';
 import { RideZWLogo } from '../common/RideZWLogo';
-import { requestSmsOtp, verifySmsOtp, OtpResponse } from '../../services/notificationService';
+import { requestSmsOtp, verifySmsOtp } from '../../services/notificationService';
+import { setAccessToken } from '../../services/authSession';
 
 interface CountryDial {
   code: string;
@@ -103,8 +104,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [authError, setAuthError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [lastOtpResponse, setLastOtpResponse] = useState<OtpResponse | null>(null);
-  const [showTwilioDetails, setShowTwilioDetails] = useState(true);
 
   // Coverage Cities
   const [coverageCities, setCoverageCities] = useState<CoverageCity[]>(() => store.getState().coverageCities || []);
@@ -201,7 +200,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     try {
       const res = await requestSmsOtp(fullPhone, selectedRole === 'driver' ? 'driver' : 'rider');
-      setLastOtpResponse(res);
       if (res.success) {
         setSuccessMessage(`SMS security verification code dispatched to ${res.targetPhone || fullPhone}`);
         setStep('otp');
@@ -246,7 +244,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         fullPhone,
         otpCode.trim(),
         selectedRole === 'driver' ? 'driver' : 'rider',
-        regDetails
+        regDetails,
+        mode
       );
 
       if (!result.success) {
@@ -255,44 +254,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
 
-      // If registered or signed in, sync store session
-      if (selectedRole === 'driver') {
-        if (mode === 'signup') {
-          store.registerDriver({
-            name: fullName.trim() || result.user?.user_metadata?.name || 'Driver Partner',
-            phone: fullPhone,
-            nationalId: nationalId.trim() || result.user?.user_metadata?.nationalId || '63-1284920-A63',
-            email: email.trim() || result.user?.email || 'driver@ridezw.co.zw',
-            city: city || result.user?.user_metadata?.city || 'Harare',
-            vehicle: {
-              make: vehicleMake.split(' ')[0] || 'Toyota',
-              model: vehicleMake.split(' ').slice(1).join(' ') || 'Passo',
-              year: 2020,
-              color: 'Silver',
-              plateNumber: vehiclePlate.trim().toUpperCase(),
-              category: vehicleCategory,
-              capacity: vehicleCategory === 'xl' ? 6 : vehicleCategory === 'motorbike' ? 1 : 4,
-              fitnessCertNumber: 'VID-2026-REG',
-              fitnessExpiry: '2027-04-01',
-              insuranceNumber: 'OM-2026-PUB',
-              insuranceExpiry: '2027-04-01'
-            }
-          });
-        } else {
-          store.loginAsDriver(fullPhone);
-        }
-      } else {
-        if (mode === 'signup') {
-          store.registerRiderAccount({
-            name: fullName.trim() || result.user?.user_metadata?.name || 'RideZW Passenger',
-            phone: fullPhone,
-            email: email.trim() || result.user?.email || undefined,
-            city: city || 'Harare'
-          });
-        } else {
-          store.loginAsRider(fullPhone);
-        }
-      }
+      if (!result.userProfile) throw new Error('The server did not return a saved account profile');
+      store.acceptAuthenticatedProfile(selectedRole === 'driver' ? 'driver' : 'rider', result.userProfile);
 
       setIsSubmitting(false);
       onClose();
@@ -309,7 +272,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setIsSubmitting(true);
 
     try {
-      store.loginAsAdmin(adminEmail.trim(), adminPassword);
+      const response = await fetch('/api/auth/admin-login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: adminEmail.trim(), password: adminPassword }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.session?.access_token || !data.user) throw new Error(data.error || 'Invalid administrator credentials');
+      setAccessToken(data.session.access_token);
+      store.acceptAuthenticatedAdmin(data.user);
       setIsSubmitting(false);
       onClose();
     } catch (err: any) {
@@ -514,93 +481,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </div>
               </div>
 
-              {/* Twilio Live Diagnostics Panel */}
-              {lastOtpResponse && (
-                <div className="border border-slate-200 rounded-xl bg-slate-50/80 p-3 text-xs space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 font-bold text-slate-800">
-                      <Server className="w-3.5 h-3.5 text-sky-600" />
-                      <span>Twilio Gateway Status</span>
-                    </div>
-                    {lastOtpResponse.calledTwilio ? (
-                      lastOtpResponse.twilioSid ? (
-                        <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-extrabold rounded-full flex items-center gap-1">
-                          <CheckCircle2 className="w-3 h-3" /> Live SMS Sent
-                        </span>
-                      ) : (
-                        <span className="px-2 py-0.5 bg-rose-100 text-rose-800 text-[10px] font-extrabold rounded-full flex items-center gap-1">
-                          <AlertCircle className="w-3 h-3" /> Twilio Error
-                        </span>
-                      )
-                    ) : (
-                      <span className="px-2 py-0.5 bg-amber-100 text-amber-900 text-[10px] font-extrabold rounded-full flex items-center gap-1">
-                        <Info className="w-3 h-3" /> Server Keys Missing
-                      </span>
-                    )}
-                  </div>
-
-                  {/* If Twilio was called and succeeded */}
-                  {lastOtpResponse.calledTwilio && lastOtpResponse.twilioSid && (
-                    <div className="p-2 bg-emerald-50/60 border border-emerald-200 rounded-lg space-y-1 text-emerald-950 text-[11px]">
-                      <div className="font-mono flex justify-between">
-                        <span className="text-slate-500">Twilio SID:</span>
-                        <span className="font-bold">{lastOtpResponse.twilioSid}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-500">Dispatch Status:</span>
-                        <span className="font-bold uppercase text-emerald-700">{lastOtpResponse.twilioStatus || 'queued'}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-500">Sender Number:</span>
-                        <span className="font-mono">{lastOtpResponse.twilioFrom || 'Configured Caller'}</span>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* If Twilio was called but Twilio rejected / returned error */}
-                  {lastOtpResponse.calledTwilio && (lastOtpResponse.twilioError || lastOtpResponse.rawTwilioError) && (
-                    <div className="p-2.5 bg-rose-50/80 border border-rose-200 rounded-lg space-y-1.5 text-rose-950 text-[11px]">
-                      <div className="font-bold text-rose-900 flex items-center gap-1">
-                        <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-                        <span>Twilio API Response:</span>
-                      </div>
-                      <div className="font-mono bg-white/80 p-1.5 rounded border border-rose-200 text-rose-800 text-[10.5px] leading-tight break-all">
-                        {lastOtpResponse.rawTwilioError?.message || lastOtpResponse.twilioError || 'Twilio refused connection'}
-                      </div>
-                      {lastOtpResponse.rawTwilioError?.twilioErrorCode && (
-                        <div className="text-[10px] text-rose-700">
-                          Twilio Error Code: <span className="font-bold font-mono">{lastOtpResponse.rawTwilioError.twilioErrorCode}</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* If Twilio is not configured in server environment */}
-                  {!lastOtpResponse.calledTwilio && (
-                    <div className="p-2 bg-amber-50/70 border border-amber-200 rounded-lg space-y-1 text-amber-950 text-[11px]">
-                      <div className="text-slate-600 leading-snug">
-                        Twilio credentials (<span className="font-mono font-bold text-amber-900">TWILIO_ACCOUNT_SID</span>, <span className="font-mono font-bold text-amber-900">TWILIO_AUTH_TOKEN</span>, <span className="font-mono font-bold text-amber-900">TWILIO_PHONE_NUMBER</span>) are not set in the server environment.
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Quick Auto-Fill for Testing */}
-                  {(lastOtpResponse.code || lastOtpResponse.isSimulated) && (
-                    <div className="flex items-center justify-between pt-1 border-t border-slate-200/80 text-[11px]">
-                      <span className="text-slate-500 font-medium">Test verification code:</span>
-                      <button
-                        type="button"
-                        onClick={() => setOtpCode(lastOtpResponse.code || '123456')}
-                        className="px-2 py-0.5 bg-sky-100 hover:bg-sky-200 text-sky-900 font-mono font-bold rounded flex items-center gap-1 transition-colors"
-                      >
-                        <Key className="w-3 h-3 text-sky-700" />
-                        <span>Auto-fill {lastOtpResponse.code || '123456'}</span>
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-
               <div>
                 <label className="text-xs font-bold text-slate-700 block mb-1">
                   6-Digit Verification Code
@@ -610,7 +490,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   maxLength={6}
                   value={otpCode}
                   onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
-                  placeholder="123456"
+                  placeholder="------"
                   autoFocus
                   required
                   className="w-full py-3 px-4 text-center tracking-[0.4em] font-mono text-xl font-bold bg-white border-2 border-sky-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500 text-sky-950"

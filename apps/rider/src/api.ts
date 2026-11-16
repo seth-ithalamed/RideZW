@@ -125,7 +125,7 @@ export const ridezwApi = {
   
   // Mobile Authentication
   sendOtp: async (phone: string, role: 'rider' | 'driver' = 'rider') => {
-    return request<{ success: boolean; message: string; isSimulated?: boolean; code?: string; targetPhone?: string }>(
+    return request<{ success: boolean; message: string; targetPhone?: string }>(
       '/api/mobile/auth/send-otp',
       {
         method: 'POST',
@@ -146,16 +146,18 @@ export const ridezwApi = {
       vehicleMake?: string;
       vehiclePlate?: string;
       vehicleCategory?: string;
-    } | string
+    } | string,
+    flow: 'signin' | 'signup' = 'signin'
   ) => {
     const payload = typeof registrationDetails === 'string'
-      ? { phone, code, role, name: registrationDetails }
-      : { phone, code, role, ...(registrationDetails || {}) };
+      ? { phone, code, role, flow, name: registrationDetails }
+      : { phone, code, role, flow, ...(registrationDetails || {}) };
 
     const r = await request<any>('/api/mobile/auth/verify-otp', {
       method: 'POST',
       body: JSON.stringify(payload)
     });
+    if (!r.session?.access_token || !r.user) throw new Error('The server did not return a verified RideZW session');
     if (r.session?.access_token) {
       await SecureStore.setItemAsync(ACCESS, r.session.access_token);
       if (r.session?.refresh_token) {

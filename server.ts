@@ -4,6 +4,7 @@ import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import twilio from 'twilio';
+import { createHmac, randomBytes, randomInt, randomUUID } from 'crypto';
 
 dotenv.config();
 
@@ -22,10 +23,6 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// In-memory OTP cache for verification
-const otpStore: Record<string, { code: string; expiresAt: number }> = {};
-const mobileOtpSessions = new Map<string, { user: any; createdAt: number }>();
 
 // In-memory fallback database for server-side persistence when remote DB is offline or during preview
 const serverDb = {
@@ -71,6 +68,21 @@ function getServerSupabase(): SupabaseClient | null {
     return serverSupabaseClient;
   } catch (err) {
     console.warn('Failed to initialize server Supabase client:', err);
+    return null;
+  }
+}
+
+let serverSupabaseAdminClient: SupabaseClient | null = null;
+function getServerSupabaseAdmin(): SupabaseClient | null {
+  if (serverSupabaseAdminClient) return serverSupabaseAdminClient;
+  const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key || !url.trim() || !key.trim()) return null;
+  try {
+    serverSupabaseAdminClient = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
+    return serverSupabaseAdminClient;
+  } catch (err) {
+    console.error('Failed to initialize admin Supabase client:', err);
     return null;
   }
 }
@@ -161,326 +173,147 @@ function getFirebaseAdmin() {
 // 1. Health & Configuration Status Endpoint
 
 
-// Mobile API boundary: mobile clients never connect to Supabase directly.
+// Mobile API boundary: validate real Supabase access tokens and load the canonical DB profile.
 async function requireMobileUser(req: any, res: any): Promise<any | null> {
   const header = String(req.headers.authorization || '');
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
   if (!token) { res.status(401).json({ error: 'Authentication required' }); return null; }
-
-  // 1. Check in-memory mobile OTP sessions
-  const otpSession = mobileOtpSessions.get(token);
-  if (otpSession && otpSession.user) {
-    return otpSession.user;
-  }
-
-  // 2. Check Supabase Auth session if configured
-  const sb = getServerSupabase();
-  if (sb) {
-    const { data, error } = await sb.auth.getUser(token);
-    if (!error && data.user) return data.user;
-  }
-
-  res.status(401).json({ error: 'Invalid or expired session' });
-  return null;
+  const sb = getServerSupabaseAdmin();
+  if (!sb) { res.status(503).json({ error: 'Authentication service is not configured' }); return null; }
+  const { data, error } = await sb.auth.getUser(token);
+  if (error || !data.user) { res.status(401).json({ error: 'Invalid or expired session' }); return null; }
+  const { data: profile, error: profileError } = await sb.from('ridezw_profiles').select('*').eq('auth_user_id', data.user.id).maybeSingle();
+  if (profileError) { console.error('Authenticated profile lookup failed:', profileError.message); res.status(503).json({ error: 'Could not verify account profile' }); return null; }
+  if (!profile) { res.status(403).json({ error: 'A verified RideZW profile is required' }); return null; }
+  if (profile.status === 'suspended') { res.status(403).json({ error: 'This account is suspended' }); return null; }
+  return {
+    ...data.user,
+    app_metadata: { ...(data.user.app_metadata || {}), role: profile.role },
+    user_metadata: { ...(data.user.user_metadata || {}), role: profile.role, name: profile.display_name, phone: profile.phone, city: profile.city, nationalId: profile.national_id, vehicle: profile.vehicle_data },
+    ridezw_role: profile.role,
+    profile
+  };
 }
 
 // =============================================================================
 // UNIFIED AUTH & OTP ENGINE (Used by Web & Mobile Apps)
 // =============================================================================
 
+function hashRideZwOtp(phone: string, role: string, code: string): string {
+  const secret = process.env.OTP_HASH_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!secret) throw new Error('OTP hashing secret is not configured');
+  return createHmac('sha256', secret).update(phone + ':' + role + ':' + code).digest('hex');
+}
+
 async function dispatchOtpSms(phone: string, role: string = 'rider') {
+  const effectiveRole = String(role || 'rider').trim();
+  if (!['rider', 'driver'].includes(effectiveRole)) return { status: 400, error: 'A valid rider or driver role is required' };
   const normalizedPhone = normalizePhoneForTwilio(phone);
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
-
-  const entry = {
-    code,
-    expiresAt: Date.now() + 5 * 60 * 1000 // 5 minutes
-  };
-  otpStore[phone] = entry;
-  otpStore[normalizedPhone] = entry;
-
-  const smsBody = `Your RideZW security verification code is: ${code}. Valid for 5 minutes. Do not share this code.`;
+  if (!/^\+[1-9]\d{7,14}$/.test(normalizedPhone)) return { status: 400, error: 'Enter a valid international mobile number' };
+  const sb = getServerSupabaseAdmin();
+  if (!sb) return { status: 503, error: 'Authentication database is not configured' };
   const { sid, token, from, isConfigured } = getTwilioConfig();
-
-  const missingKeys: string[] = [];
-  if (!sid) missingKeys.push('TWILIO_ACCOUNT_SID');
-  if (!token) missingKeys.push('TWILIO_AUTH_TOKEN');
-  if (!from) missingKeys.push('TWILIO_PHONE_NUMBER');
-
-  if (isConfigured) {
-    try {
-      const twilioInstance = getTwilio();
-      if (twilioInstance) {
-        const msgParams: any = {
-          body: smsBody,
-          to: normalizedPhone
-        };
-        if (from.startsWith('MG')) {
-          msgParams.messagingServiceSid = from;
-        } else {
-          msgParams.from = from;
-        }
-        const msg = await twilioInstance.messages.create(msgParams);
-        console.log(`[Twilio SMS Success] Dispatched to ${normalizedPhone}, SID: ${msg.sid}, Status: ${msg.status}`);
-        return {
-          success: true,
-          message: `SMS security verification code dispatched to ${normalizedPhone}`,
-          calledTwilio: true,
-          isSimulated: false,
-          targetPhone: normalizedPhone,
-          twilioSid: msg.sid,
-          twilioStatus: msg.status || 'queued',
-          twilioFrom: msg.from || from,
-          rawTwilioResponse: {
-            sid: msg.sid,
-            status: msg.status,
-            to: msg.to,
-            from: msg.from || from,
-            body: smsBody,
-            dateCreated: msg.dateCreated ? String(msg.dateCreated) : new Date().toISOString(),
-            direction: msg.direction || 'outbound-api',
-            price: msg.price || null,
-            priceUnit: msg.priceUnit || null,
-            errorCode: msg.errorCode || null,
-            errorMessage: msg.errorMessage || null
-          },
-          code
-        };
-      }
-    } catch (err: any) {
-      console.warn('[Twilio SMS Error]:', err.message, 'Code:', err.code, 'Status:', err.status);
-      return {
-        success: true,
-        message: `Twilio delivery note: ${err.message || 'SMS service error'}`,
-        calledTwilio: true,
-        isSimulated: true,
-        twilioError: err.message,
-        rawTwilioError: {
-          httpStatus: err.status || 500,
-          twilioErrorCode: err.code || null,
-          message: err.message || 'Twilio API communication error',
-          moreInfo: err.moreInfo || 'https://www.twilio.com/docs/api/errors'
-        },
-        code,
-        targetPhone: normalizedPhone,
-        twilioRequestPayload: {
-          to: normalizedPhone,
-          from,
-          body: smsBody,
-          accountSidMasked: sid ? `${sid.slice(0, 6)}...${sid.slice(-4)}` : null
-        }
-      };
-    }
+  if (!isConfigured) return { status: 503, error: 'SMS verification is temporarily unavailable' };
+  const code = String(randomInt(0, 1000000)).padStart(6, '0');
+  let codeHash: string;
+  try { codeHash = hashRideZwOtp(normalizedPhone, effectiveRole, code); }
+  catch { return { status: 503, error: 'OTP security is not configured' }; }
+  const { data: issueResult, error: issueError } = await sb.rpc('issue_ridezw_otp', { p_phone: normalizedPhone, p_role: effectiveRole, p_code_hash: codeHash });
+  if (issueError) { console.error('OTP challenge write failed:', issueError.message); return { status: 503, error: 'Could not start verification; please try again later' }; }
+  if (issueResult === 'cooldown') return { status: 429, error: 'Please wait before requesting another verification code' };
+  try {
+    const client = getTwilio();
+    if (!client) throw new Error('Twilio client unavailable');
+    const messageParams: any = { to: normalizedPhone, body: 'Your RideZW security verification code is: ' + code + '. Valid for 5 minutes. Do not share this code.' };
+    if (from.startsWith('MG')) messageParams.messagingServiceSid = from;
+    else messageParams.from = from;
+    await client.messages.create(messageParams);
+    return { success: true, message: 'Verification code sent', targetPhone: normalizedPhone, expiresIn: 300 };
+  } catch (err: any) {
+    console.warn('[Twilio SMS Error]:', err?.message || 'SMS delivery failed');
+    return { status: 502, error: 'Could not deliver the verification code; please try again later' };
   }
-
-  // Fallback when running in container without configured Twilio secrets
-  console.log(`[OTP Simulated] Twilio not configured (${missingKeys.join(', ')} missing). Code for ${normalizedPhone}: ${code}`);
-  return {
-    success: true,
-    message: `Verification code generated for ${normalizedPhone}`,
-    calledTwilio: false,
-    isSimulated: true,
-    missingConfig: missingKeys,
-    code,
-    targetPhone: normalizedPhone,
-    twilioRequestPayload: {
-      to: normalizedPhone,
-      from: from || 'MISSING_TWILIO_PHONE_NUMBER',
-      body: smsBody,
-      accountSidMasked: sid ? `${sid.slice(0, 6)}...${sid.slice(-4)}` : null
-    }
-  };
 }
 
 async function processVerifyOtp(body: any) {
-  const {
-    phone,
-    code,
-    role = 'rider',
-    name,
-    nationalId,
-    city,
-    email,
-    vehicleMake,
-    vehiclePlate,
-    vehicleCategory
-  } = body || {};
-
-  if (!phone || !code) {
-    return { status: 400, error: 'Phone number and verification code are required' };
-  }
-
+  const { phone, code, role = 'rider', flow = 'signin', name, nationalId, city, email, vehicleMake, vehiclePlate, vehicleCategory } = body || {};
+  if (!phone || !code) return { status: 400, error: 'Phone number and verification code are required' };
+  const effectiveRole = String(role || '').trim();
+  if (!['rider', 'driver'].includes(effectiveRole)) return { status: 400, error: 'A valid rider or driver role is required' };
   const normalizedPhone = normalizePhoneForTwilio(phone);
-  const stored = otpStore[phone] || otpStore[normalizedPhone];
-  const isMasterCode = String(code).trim() === '123456';
-
-  if (!stored && !isMasterCode) {
-    return { status: 400, error: 'No active OTP request found or code expired' };
+  if (!/^\+[1-9]\d{7,14}$/.test(normalizedPhone) || !/^\d{6}$/.test(String(code).trim())) return { status: 400, error: 'Enter a valid phone number and 6-digit code' };
+  const isSignup = flow === 'signup';
+  if (flow !== 'signin' && !isSignup) return { status: 400, error: 'Invalid authentication flow' };
+  if (isSignup && !String(name || '').trim()) return { status: 400, error: 'Full name is required to create an account' };
+  if (isSignup && effectiveRole === 'driver' && (!String(nationalId || '').trim() || !String(vehicleMake || '').trim() || !String(vehiclePlate || '').trim())) return { status: 400, error: 'National ID, vehicle make, and vehicle plate are required for driver registration' };
+  if (isSignup && effectiveRole === 'driver' && !['economy', 'comfort', 'xl', 'motorbike'].includes(String(vehicleCategory || 'economy'))) return { status: 400, error: 'Invalid vehicle category' };
+  const sb = getServerSupabaseAdmin();
+  if (!sb) return { status: 503, error: 'Authentication service is not configured' };
+  let submittedHash: string;
+  try { submittedHash = hashRideZwOtp(normalizedPhone, effectiveRole, String(code).trim()); }
+  catch { return { status: 503, error: 'OTP security is not configured' }; }
+  const { data: verifyResult, error: verifyError } = await sb.rpc('consume_ridezw_otp', { p_phone: normalizedPhone, p_role: effectiveRole, p_code_hash: submittedHash });
+  if (verifyError) { console.error('OTP verification failed:', verifyError.message); return { status: 503, error: 'Could not verify the code; please try again later' }; }
+  if (verifyResult !== 'verified') {
+    const messages: Record<string, string> = { missing: 'No active verification request was found', expired: 'The verification code has expired', locked: 'Too many incorrect codes; request a new code', invalid: 'The verification code is incorrect' };
+    return { status: verifyResult === 'missing' || verifyResult === 'expired' || verifyResult === 'locked' ? 400 : 401, error: messages[String(verifyResult)] || 'Verification failed' };
   }
-
-  if (!isMasterCode && stored) {
-    if (Date.now() > stored.expiresAt) {
-      delete otpStore[phone];
-      delete otpStore[normalizedPhone];
-      return { status: 400, error: 'OTP has expired. Please request a new code.' };
-    }
-    if (stored.code !== String(code).trim()) {
-      return { status: 400, error: 'Invalid verification code. Please check your SMS and try again.' };
-    }
-  }
-
-  delete otpStore[phone];
-  delete otpStore[normalizedPhone];
-
-  const effectiveRole = ['driver', 'rider'].includes(role) ? role : 'rider';
-  const cleanDigits = normalizedPhone.replace(/\D/g, '').slice(-8) || 'user';
-  const userId = (effectiveRole === 'driver' ? 'drv_' : 'rdr_') + cleanDigits;
-
-  let existingRecord: any = null;
-  const sb = getServerSupabase();
-
-  if (sb) {
-    try {
-      if (effectiveRole === 'driver') {
-        const { data } = await sb.from('drivers').select('*').or(`phone.eq.${phone},phone.eq.${normalizedPhone}`).limit(1);
-        if (data && data.length > 0) existingRecord = data[0];
-      } else {
-        const { data } = await sb.from('riders').select('*').or(`phone.eq.${phone},phone.eq.${normalizedPhone}`).limit(1);
-        if (data && data.length > 0) existingRecord = data[0];
-      }
-    } catch (e) {
-      console.warn('Supabase profile query warning:', e);
-    }
-  }
-
-  if (effectiveRole === 'driver') {
-    const vMake = (vehicleMake || 'Toyota Passo').trim().split(' ')[0] || 'Toyota';
-    const vModel = (vehicleMake || 'Passo').trim().split(' ').slice(1).join(' ') || 'Passo';
-    const vPlate = (vehiclePlate || 'AFE-8921').trim().toUpperCase();
-    const vCat = vehicleCategory || 'economy';
-
-    existingRecord = serverDb.drivers.get(userId) || existingRecord || {
-      id: userId,
-      name: name || 'Driver ' + normalizedPhone.slice(-4),
-      phone: normalizedPhone,
-      role: 'driver',
-      isOnline: true,
-      kycStatus: 'verified',
-      rating: 4.9,
-      totalTrips: 0,
-      walletBalanceUSD: 20.00,
-      city: city || 'Harare',
-      nationalId: nationalId || '63-1284920-A63',
-      email: email || `${cleanDigits}@ridezw.local`,
-      vehicle: {
-        make: vMake,
-        model: vModel,
-        plateNumber: vPlate,
-        color: 'Silver',
-        category: vCat,
-        capacity: vCat === 'xl' ? 6 : vCat === 'motorbike' ? 1 : 4
-      }
-    };
-
-    if (name) existingRecord.name = name;
-    if (city) existingRecord.city = city;
-    if (nationalId) existingRecord.nationalId = nationalId;
-    if (email) existingRecord.email = email;
-    if (vehiclePlate) existingRecord.vehicle = { ...existingRecord.vehicle, plateNumber: vPlate };
-    if (vehicleMake) existingRecord.vehicle = { ...existingRecord.vehicle, make: vMake, model: vModel };
-    if (vehicleCategory) existingRecord.vehicle = { ...existingRecord.vehicle, category: vCat };
-
-    serverDb.drivers.set(userId, existingRecord);
-
-    if (sb) {
-      try {
-        await sb.from('drivers').upsert({
-          id: userId,
-          name: existingRecord.name,
-          phone: normalizedPhone,
-          email: existingRecord.email,
-          national_id: existingRecord.nationalId,
-          city: existingRecord.city,
-          vehicle_make: existingRecord.vehicle?.make,
-          vehicle_model: existingRecord.vehicle?.model,
-          vehicle_plate: existingRecord.vehicle?.plateNumber,
-          vehicle_category: existingRecord.vehicle?.category
-        });
-      } catch (err) {
-        console.warn('DB driver upsert sync warning:', err);
-      }
-    }
+  const { data: existing, error: profileLookupError } = await sb.from('ridezw_profiles').select('*').eq('phone', normalizedPhone).maybeSingle();
+  if (profileLookupError) { console.error('Profile lookup failed:', profileLookupError.message); return { status: 503, error: 'Could not load account profile' }; }
+  if (existing && existing.role !== effectiveRole) return { status: 403, error: 'This phone number is registered for a different account type' };
+  if (existing?.status === 'suspended') return { status: 403, error: 'This account is suspended' };
+  if (!existing && !isSignup) return { status: 404, error: 'No account was found for this phone number. Choose Register Account to create one.' };
+  const displayName = isSignup ? String(name).trim() : String(existing?.display_name || '').trim();
+  if (!displayName) return { status: 400, error: 'Full name is required to create an account' };
+  const cleanCity = isSignup ? String(city || 'Harare').trim() : String(existing?.city || 'Harare');
+  const oldVehicle = existing?.vehicle_data && typeof existing.vehicle_data === 'object' ? existing.vehicle_data : {};
+  const makeParts = String(vehicleMake || '').trim().split(/\s+/).filter(Boolean);
+  const vehicleData = effectiveRole === 'driver' ? {
+    ...oldVehicle,
+    ...(isSignup ? { make: makeParts[0] || '', model: makeParts.slice(1).join(' '), plateNumber: String(vehiclePlate || '').trim().toUpperCase(), category: String(vehicleCategory || 'economy').trim() } : {})
+  } : {};
+  const profileRowBase = {
+    role: effectiveRole, phone: normalizedPhone, display_name: displayName,
+    email: isSignup ? (String(email || '').trim() || existing?.email || null) : (existing?.email || null),
+    city: cleanCity, national_id: isSignup ? (String(nationalId || '').trim().toUpperCase() || null) : (existing?.national_id || null),
+    vehicle_data: vehicleData, status: existing?.status || (effectiveRole === 'driver' ? 'pending_review' : 'active'), updated_at: new Date().toISOString()
+  };
+  const password = randomBytes(32).toString('hex');
+  const authMetadata = { name: displayName, phone: normalizedPhone, city: cleanCity, nationalId: profileRowBase.national_id, vehicle: vehicleData };
+  let authUser: any;
+  let createdNewUser = false;
+  if (existing?.auth_user_id) {
+    const { data: currentUser, error: getUserError } = await sb.auth.admin.getUserById(existing.auth_user_id);
+    if (getUserError || !currentUser.user) return { status: 503, error: 'Could not load the authenticated account' };
+    authUser = currentUser.user;
   } else {
-    existingRecord = serverDb.riders.get(userId) || existingRecord || {
-      id: userId,
-      name: name || 'Rider ' + normalizedPhone.slice(-4),
-      phone: normalizedPhone,
-      role: 'rider',
-      walletBalanceUSD: 15.00,
-      totalTrips: 0,
-      city: city || 'Harare',
-      email: email || `${cleanDigits}@ridezw.local`
-    };
-
-    if (name) existingRecord.name = name;
-    if (city) existingRecord.city = city;
-    if (email) existingRecord.email = email;
-
-    serverDb.riders.set(userId, existingRecord);
-
-    if (sb) {
-      try {
-        await sb.from('riders').upsert({
-          id: userId,
-          name: existingRecord.name,
-          phone: normalizedPhone,
-          email: existingRecord.email,
-          city: existingRecord.city
-        });
-      } catch (err) {
-        console.warn('DB rider upsert sync warning:', err);
-      }
-    }
+    const { data: created, error: createError } = await sb.auth.admin.createUser({ phone: normalizedPhone, phone_confirm: true, password, app_metadata: { role: effectiveRole }, user_metadata: authMetadata });
+    if (createError || !created.user) { console.error('Supabase user creation failed:', createError?.message); return { status: 409, error: 'Could not create an account for this phone number' }; }
+    authUser = created.user;
+    createdNewUser = true;
   }
-
-  const user = {
-    id: existingRecord.id || userId,
-    phone: normalizedPhone,
-    email: existingRecord.email || `${cleanDigits}@ridezw.local`,
-    user_metadata: {
-      role: effectiveRole,
-      name: existingRecord.name || (effectiveRole === 'driver' ? 'Driver Partner' : 'RideZW Rider'),
-      phone: normalizedPhone,
-      city: existingRecord.city,
-      nationalId: existingRecord.nationalId,
-      vehicle: existingRecord.vehicle
-    }
-  };
-
-  const sessionToken = `rzw_mobile_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-  mobileOtpSessions.set(sessionToken, { user, createdAt: Date.now() });
-
-  return {
-    status: 200,
-    success: true,
-    user,
-    userProfile: existingRecord,
-    role: effectiveRole,
-    session: {
-      access_token: sessionToken,
-      refresh_token: sessionToken,
-      expires_in: 86400 * 30,
-      token_type: 'bearer'
-    }
-  };
+  const profileRow = { ...profileRowBase, auth_user_id: authUser.id, created_at: existing?.created_at || new Date().toISOString() };
+  const { error: upsertProfileError } = await sb.from('ridezw_profiles').upsert(profileRow, { onConflict: 'auth_user_id' });
+  if (upsertProfileError) {
+    if (createdNewUser) await sb.auth.admin.deleteUser(authUser.id);
+    console.error('Canonical profile write failed:', upsertProfileError.message);
+    return { status: 503, error: 'Could not save account profile' };
+  }
+  const { error: updateAuthError } = await sb.auth.admin.updateUserById(authUser.id, { password, app_metadata: { ...(authUser.app_metadata || {}), role: effectiveRole }, user_metadata: authMetadata });
+  if (updateAuthError) { console.error('Supabase user update failed:', updateAuthError.message); return { status: 503, error: 'Could not establish an authenticated session' }; }
+  const { data: loginData, error: loginError } = await sb.auth.signInWithPassword({ phone: normalizedPhone, password });
+  if (loginError || !loginData.session || !loginData.user) { console.error('Supabase session creation failed:', loginError?.message); return { status: 503, error: 'Could not establish an authenticated session' }; }
+  const user = { ...loginData.user, app_metadata: { ...(loginData.user.app_metadata || {}), role: effectiveRole }, user_metadata: { ...(loginData.user.user_metadata || {}), ...authMetadata, role: effectiveRole } };
+  return { status: 200, success: true, user, userProfile: profileRow, role: effectiveRole, session: loginData.session };
 }
 
-// Mobile OTP Dispatch Endpoint
+
 app.all(['/api/mobile/auth/send-otp', '/api/mobile/auth/send-otp/'], async (req, res) => {
   const phone = (req.body?.phone || req.query?.phone || '').toString().trim();
   const role = (req.body?.role || req.query?.role || 'rider').toString().trim();
   if (!phone) return res.status(400).json({ error: 'Mobile phone number is required', success: false });
-  const result = await dispatchOtpSms(phone, role);
+  const result: any = await dispatchOtpSms(phone, role);
+  if (result.status && result.status !== 200) return res.status(result.status).json({ success: false, error: result.error });
   return res.json(result);
 });
 
@@ -499,7 +332,8 @@ app.all(['/api/auth/send-otp', '/api/auth/send-otp/'], async (req, res) => {
   const phone = (req.body?.phone || req.query?.phone || '').toString().trim();
   const role = (req.body?.role || req.query?.role || 'rider').toString().trim();
   if (!phone) return res.status(400).json({ error: 'Mobile phone number is required', success: false });
-  const result = await dispatchOtpSms(phone, role);
+  const result: any = await dispatchOtpSms(phone, role);
+  if (result.status && result.status !== 200) return res.status(result.status).json({ success: false, error: result.error });
   return res.json(result);
 });
 
@@ -531,7 +365,7 @@ app.all(['/api/auth/diagnostic', '/api/auth/twilio-status'], (req, res) => {
       authTokenPresent: Boolean(token),
       fromNumber: from || null
     },
-    activeOtpRequests: Object.keys(otpStore).length
+
   });
 });
 
@@ -539,8 +373,7 @@ app.all(['/api/auth/diagnostic', '/api/auth/twilio-status'], (req, res) => {
 app.all(['/api/auth/test-sms', '/api/auth/test-sms/'], async (req, res) => {
   const phone = (req.body?.phone || req.query?.phone || '').toString().trim();
   if (!phone) return res.status(400).json({ error: 'phone is required', success: false });
-  const result = await dispatchOtpSms(phone, 'test');
-  return res.json(result);
+  return res.status(410).json({ success: false, error: 'Test OTP dispatch is disabled. Use the standard authentication flow.' });
 });
 
 app.post('/api/auth/admin-login', async (req, res) => {
@@ -549,37 +382,42 @@ app.post('/api/auth/admin-login', async (req, res) => {
   if (!sb) return res.status(503).json({ error: 'Authentication service is not configured' });
   if (!email || !password) return res.status(400).json({ error: 'email and password are required' });
   const { data, error } = await sb.auth.signInWithPassword({ email, password });
-  if (error || !data.user || data.user.user_metadata?.role !== 'admin') return res.status(401).json({ error: 'Invalid administrator credentials' });
+  if (error || !data.user || data.user.app_metadata?.role !== 'admin') return res.status(401).json({ error: 'Invalid administrator credentials' });
   return res.json({ user: data.user, session: data.session });
 });
 
-app.post('/api/mobile/auth/signup', async (req, res) => {
-  const { email, password, role = 'rider', name, phone } = req.body || {};
-  if (!email || !password || !['rider', 'driver'].includes(role)) return res.status(400).json({ error: 'email, password, and a valid role are required' });
-  const sb = getServerSupabase();
-  if (!sb) return res.status(503).json({ error: 'Authentication service is not configured' });
-  const { data, error } = await sb.auth.signUp({ email, password, options: { data: { role, name: name || '', phone: phone || '' } } });
-  if (error) return res.status(400).json({ error: error.message });
-  return res.status(201).json({ user: data.user, session: data.session });
+// Password-only registration bypassed phone verification and the canonical profile; OTP is the supported mobile registration flow.
+app.post('/api/mobile/auth/signup', async (_req, res) => {
+  return res.status(410).json({ error: 'Use phone verification to create a RideZW account' });
 });
 
 app.post('/api/mobile/auth/signin', async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'email and password are required' });
-  const sb = getServerSupabase();
+  const sb = getServerSupabaseAdmin();
   if (!sb) return res.status(503).json({ error: 'Authentication service is not configured' });
   const { data, error } = await sb.auth.signInWithPassword({ email, password });
-  if (error || !data.session) return res.status(401).json({ error: error?.message || 'Invalid credentials' });
-  return res.json({ user: data.user, session: data.session });
+  if (error || !data.session || !data.user) return res.status(401).json({ error: 'Invalid credentials' });
+  const { data: profile, error: profileError } = await sb.from('ridezw_profiles').select('*').eq('auth_user_id', data.user.id).maybeSingle();
+  if (profileError) return res.status(503).json({ error: 'Could not verify account profile' });
+  if (!profile) return res.status(403).json({ error: 'A verified RideZW profile is required' });
+  if (profile.status === 'suspended') return res.status(403).json({ error: 'This account is suspended' });
+  const user = { ...data.user, app_metadata: { ...(data.user.app_metadata || {}), role: profile.role }, user_metadata: { ...(data.user.user_metadata || {}), role: profile.role, name: profile.display_name, phone: profile.phone } };
+  return res.json({ user, userProfile: profile, session: data.session });
 });
 
 app.post('/api/mobile/auth/refresh', async (req, res) => {
   const { refreshToken } = req.body || {};
-  const sb = getServerSupabase();
+  const sb = getServerSupabaseAdmin();
   if (!sb || !refreshToken) return res.status(400).json({ error: 'refreshToken is required' });
   const { data, error } = await sb.auth.refreshSession({ refresh_token: refreshToken });
-  if (error || !data.session) return res.status(401).json({ error: error?.message || 'Session refresh failed' });
-  return res.json({ user: data.user, session: data.session });
+  if (error || !data.session || !data.user) return res.status(401).json({ error: 'Session refresh failed' });
+  const { data: profile, error: profileError } = await sb.from('ridezw_profiles').select('*').eq('auth_user_id', data.user.id).maybeSingle();
+  if (profileError) return res.status(503).json({ error: 'Could not verify account profile' });
+  if (!profile) return res.status(403).json({ error: 'A verified RideZW profile is required' });
+  if (profile.status === 'suspended') return res.status(403).json({ error: 'This account is suspended' });
+  const user = { ...data.user, app_metadata: { ...(data.user.app_metadata || {}), role: profile.role }, user_metadata: { ...(data.user.user_metadata || {}), role: profile.role, name: profile.display_name, phone: profile.phone } };
+  return res.json({ user, userProfile: profile, session: data.session });
 });
 
 app.get('/api/mobile/auth/me', async (req, res) => {
@@ -673,214 +511,139 @@ app.get('/api/mobile/trips/:id', async (req, res) => {
   return res.json({ success: true, trip });
 });
 
-// Payment boundary: OpenAPI Africa / ClicknPay credentials and fulfillment stay server-side.
+// Payment boundary: ClicknPay credentials, order persistence, status verification, and fulfillment stay server-side.
 const clicknPayBaseUrl = process.env.CLICKNPAY_API_URL || 'https://backendservices.clicknpay.africa:2081';
 async function persistPaymentTransaction(transaction: any) {
-  const sb = getServerSupabase();
-  if (sb) {
-    try {
-      await sb.from('payment_transactions').upsert(transaction, { onConflict: 'client_reference' });
-    } catch (e: any) {
-      console.warn('DB payment transaction upsert warning:', e.message);
-    }
+  const sb = getServerSupabaseAdmin();
+  if (!sb) throw new Error('Payment database is not configured');
+  const { error } = await sb.from('payment_transactions').upsert(transaction, { onConflict: 'client_reference' });
+  if (error) throw new Error('Payment transaction could not be persisted');
+}
+
+async function updatePaymentTransaction(clientReference: string, update: any) {
+  const sb = getServerSupabaseAdmin();
+  if (!sb) throw new Error('Payment database is not configured');
+  const { data, error } = await sb.from('payment_transactions').update({ ...update, updated_at: new Date().toISOString() }).eq('client_reference', clientReference).select('client_reference').maybeSingle();
+  if (error || !data) throw new Error('Payment transaction could not be updated');
+}
+
+async function fulfillSuccessfulPayment(clientReference: string, _paymentData: any) {
+  const sb = getServerSupabaseAdmin();
+  if (!sb) throw new Error('Payment database is not configured');
+  const { data: tx, error: txError } = await sb.from('payment_transactions').select('*').eq('client_reference', clientReference).maybeSingle();
+  if (txError || !tx || tx.status !== 'SUCCESS') throw new Error('Verified successful payment transaction not found');
+  if (tx.purpose === 'ride' && tx.related_id) {
+    const { error } = await sb.from('trips').update({ payment_status: 'paid', updated_at: new Date().toISOString() }).eq('id', tx.related_id);
+    if (error) throw new Error('Payment was verified but ride payment status could not be saved');
   }
 }
 
-async function fulfillSuccessfulPayment(clientReference: string, paymentData: any) {
-  const sb = getServerSupabase();
-  let relatedTripId: string | null = null;
-  let amountUSD = 0;
-
-  if (sb) {
-    const { data: tx } = await sb.from('payment_transactions').select('*').eq('client_reference', clientReference).single();
-    if (tx) {
-      relatedTripId = tx.related_id;
-      amountUSD = Number(tx.amount) || 0;
-    }
-  }
-
-  // Update in-memory and DB trip status if linked
-  if (relatedTripId) {
-    const trip = serverDb.trips.get(relatedTripId);
-    if (trip) {
-      trip.paymentStatus = 'paid';
-      serverDb.trips.set(trip.id, trip);
-    }
-    if (sb) {
-      await sb.from('trips').update({ payment_status: 'paid', updated_at: new Date().toISOString() }).eq('id', relatedTripId);
-    }
-  }
+function paymentStatusFromGateway(value: unknown): 'PENDING' | 'SUCCESS' | 'FAILED' {
+  const raw = String(value || '').toUpperCase();
+  return raw === 'SUCCESS' || raw === 'PAID' ? 'SUCCESS' : raw === 'FAILED' ? 'FAILED' : 'PENDING';
 }
 
 app.post('/api/payments/orders', async (req, res) => {
   const body = req.body || {};
   const amount = Number(body.amount);
-  if (!Number.isFinite(amount) || amount <= 0 || !body.customerPhone || !body.description) {
-    return res.status(400).json({ error: 'amount, customerPhone, and description are required' });
+  const currency = body.currency === 'ZWG' ? 'ZWG' : body.currency === 'USD' ? 'USD' : '';
+  const purpose = body.purpose || 'ride';
+  if (!Number.isFinite(amount) || amount <= 0 || !body.customerPhone || !body.description || !currency || !['ride', 'driver_debt', 'driver_topup'].includes(purpose)) {
+    return res.status(400).json({ error: 'A valid amount, currency, purpose, customerPhone, and description are required' });
   }
-
   const apiKey = String(process.env.CLICKNPAY_API_KEY || '').trim();
   const publicUniqueId = String(process.env.CLICKNPAY_PUBLIC_UNIQUE_ID || process.env.CLICKNPAY_MERCHANT_ID || '').trim();
-  const clientReference = String(body.orderReference || 'RIDEZW-' + Date.now().toString(36));
-  const returnUrl = body.returnUrl || process.env.PUBLIC_BASE_URL || 'https://ridezw.co.zw';
+  if (!apiKey || !publicUniqueId) return res.status(503).json({ error: 'Live payment processing is not configured' });
+  const sb = getServerSupabaseAdmin();
+  if (!sb) return res.status(503).json({ error: 'Payment database is not configured' });
 
-  // If live gateway credentials are missing, provide clean simulated gateway response for test environments
-  if (!apiKey || !publicUniqueId) {
-    const simTx = {
-      client_reference: clientReference,
-      purpose: body.purpose || 'ride',
-      related_id: body.relatedId || null,
-      amount,
-      currency: body.currency === 'ZWG' ? 'ZWG' : 'USD',
-      status: 'PENDING',
-      gateway_order_id: 'SIM-' + Date.now().toString(36),
-      gateway_payload: { simulated: true, note: 'ClicknPay credentials pending in environment' },
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    };
-    await persistPaymentTransaction(simTx);
-    return res.status(201).json({
-      success: true,
-      clientReference,
-      isSimulated: true,
-      paymeURL: `${returnUrl}?pay_ref=${encodeURIComponent(clientReference)}&status=simulated`,
-      status: 'PENDING',
-      message: 'ClicknPay order simulated. Configure CLICKNPAY_API_KEY for live processing.'
-    });
+  const clientReference = 'RIDEZW-' + randomUUID();
+  const now = new Date().toISOString();
+  try {
+    await persistPaymentTransaction({ client_reference: clientReference, purpose, related_id: body.relatedId || null, amount, currency, status: 'PENDING', gateway_payload: {}, created_at: now, updated_at: now });
+  } catch (error: any) {
+    return res.status(503).json({ error: error.message || 'Could not record payment order' });
   }
 
+  const returnUrl = body.returnUrl || process.env.PUBLIC_BASE_URL || 'https://ridezw.co.zw';
   const order = {
-    channel: 'AUTOMATED',
-    clientReference,
-    currency: body.currency === 'ZWG' ? 'ZWG' : 'USD',
-    customerCharged: true,
-    customerPhoneNumber: body.customerPhone,
-    customerEmail: body.customerEmail || undefined,
-    description: body.description,
-    multiplePayments: false,
-    orderYpe: 'DYNAMIC',
-    productsList: [{
-      description: body.description,
-      id: 0,
-      price: amount,
-      productName: body.productName || 'RideZW payment',
-      quantity: 1
-    }],
-    publicUniqueId,
-    returnUrl
+    channel: 'AUTOMATED', clientReference, currency, customerCharged: true,
+    customerPhoneNumber: body.customerPhone, customerEmail: body.customerEmail || undefined,
+    description: body.description, multiplePayments: false, orderYpe: 'DYNAMIC',
+    productsList: [{ description: body.description, id: 0, price: amount, productName: body.productName || 'RideZW payment', quantity: 1 }],
+    publicUniqueId, returnUrl
   };
 
   try {
     const response = await fetch(clicknPayBaseUrl + '/payme/orders', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + apiKey,
-        'X-Merchant-ID': process.env.CLICKNPAY_MERCHANT_ID || publicUniqueId
-      },
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey, 'X-Merchant-ID': process.env.CLICKNPAY_MERCHANT_ID || publicUniqueId },
       body: JSON.stringify(order)
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      return res.status(502).json({ error: 'Payment gateway rejected order', gatewayStatus: response.status, details: data });
+      await updatePaymentTransaction(clientReference, { status: 'FAILED', gateway_payload: data });
+      return res.status(502).json({ error: 'Payment gateway rejected order', gatewayStatus: response.status });
     }
-    await persistPaymentTransaction({
-      client_reference: clientReference,
-      purpose: body.purpose || 'ride',
-      related_id: body.relatedId || null,
-      amount,
-      currency: order.currency,
-      status: 'PENDING',
-      gateway_order_id: data.orderId || data.id || null,
-      gateway_payload: data,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    });
-    return res.status(201).json({
-      success: true,
-      clientReference: data.clientReference || clientReference,
-      paymeURL: data.paymeURL || data.paymentUrl || data.checkoutUrl || data.redirectUrl,
-      status: 'PENDING'
-    });
+    const paymeURL = data.paymeURL || data.paymentUrl || data.checkoutUrl || data.redirectUrl;
+    await updatePaymentTransaction(clientReference, { gateway_order_id: data.orderId || data.id || null, gateway_payload: data });
+    if (!paymeURL) return res.status(502).json({ error: 'Gateway order was recorded but did not return a checkout URL', clientReference, status: 'PENDING' });
+    return res.status(201).json({ success: true, clientReference, paymeURL, status: 'PENDING' });
   } catch (error: any) {
-    return res.status(502).json({ error: 'Payment gateway unavailable', details: error.message });
+    return res.status(502).json({ error: error.message || 'Payment gateway unavailable', clientReference, status: 'PENDING' });
   }
 });
 
 app.get('/api/payments/orders/:reference/status', async (req, res) => {
   const apiKey = String(process.env.CLICKNPAY_API_KEY || '').trim();
+  const merchantId = String(process.env.CLICKNPAY_MERCHANT_ID || process.env.CLICKNPAY_PUBLIC_UNIQUE_ID || '').trim();
+  if (!apiKey || !merchantId) return res.status(503).json({ error: 'Live payment status checks are not configured' });
+  const sb = getServerSupabaseAdmin();
+  if (!sb) return res.status(503).json({ error: 'Payment database is not configured' });
   const ref = req.params.reference;
-
-  if (!apiKey) {
-    // If testing in dev, allow simulated instant approval or status check
-    const sb = getServerSupabase();
-    let status = 'PENDING';
-    if (sb) {
-      const { data } = await sb.from('payment_transactions').select('*').eq('client_reference', ref).single();
-      if (data) status = data.status;
-    }
-    return res.json({ clientReference: ref, status, isPaid: status === 'SUCCESS', isSimulated: true });
-  }
-
+  const { data: transaction, error: transactionError } = await sb.from('payment_transactions').select('client_reference').eq('client_reference', ref).maybeSingle();
+  if (transactionError) return res.status(503).json({ error: 'Could not load payment transaction' });
+  if (!transaction) return res.status(404).json({ error: 'Payment transaction not found' });
   try {
-    const response = await fetch(clicknPayBaseUrl + '/payme/orders/' + encodeURIComponent(ref) + '/status', {
-      headers: {
-        Authorization: 'Bearer ' + apiKey,
-        'X-Merchant-ID': process.env.CLICKNPAY_MERCHANT_ID || ''
-      }
-    });
+    const response = await fetch(clicknPayBaseUrl + '/payme/orders/' + encodeURIComponent(ref) + '/status', { headers: { Authorization: 'Bearer ' + apiKey, 'X-Merchant-ID': merchantId } });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      return res.status(502).json({ error: 'Payment status lookup failed', gatewayStatus: response.status });
-    }
-    const raw = String(data.status || 'PENDING').toUpperCase();
-    const status = raw === 'SUCCESS' || raw === 'PAID' ? 'SUCCESS' : raw === 'FAILED' ? 'FAILED' : 'PENDING';
-    const sb = getServerSupabase();
-    if (sb) {
-      await sb.from('payment_transactions').update({
-        status,
-        gateway_payload: data,
-        updated_at: new Date().toISOString()
-      }).eq('client_reference', ref);
-    }
-    if (status === 'SUCCESS') {
-      await fulfillSuccessfulPayment(ref, data);
-    }
+    if (!response.ok) return res.status(502).json({ error: 'Payment status lookup failed', gatewayStatus: response.status });
+    const status = paymentStatusFromGateway(data.status);
+    await updatePaymentTransaction(ref, { status, gateway_payload: data, ...(status === 'SUCCESS' ? { completed_at: new Date().toISOString() } : {}) });
+    if (status === 'SUCCESS') await fulfillSuccessfulPayment(ref, data);
     return res.json({ clientReference: ref, status, isPaid: status === 'SUCCESS' });
   } catch (error: any) {
-    return res.status(502).json({ error: 'Payment gateway unavailable', details: error.message });
+    return res.status(502).json({ error: error.message || 'Payment status could not be verified' });
   }
 });
 
+// The callback body is never trusted as payment evidence; status is re-fetched from ClicknPay.
 app.post('/api/payments/webhook', async (req, res) => {
-  const payload = req.body || {};
-  const clientReference = payload.clientReference || payload.orderReference || payload.reference;
-  if (!clientReference) {
-    return res.status(400).json({ error: 'Missing clientReference in webhook payload' });
+  const clientReference = req.body?.clientReference || req.body?.orderReference || req.body?.reference;
+  if (!clientReference) return res.status(400).json({ error: 'Missing clientReference in webhook payload' });
+  const apiKey = String(process.env.CLICKNPAY_API_KEY || '').trim();
+  const merchantId = String(process.env.CLICKNPAY_MERCHANT_ID || process.env.CLICKNPAY_PUBLIC_UNIQUE_ID || '').trim();
+  if (!apiKey || !merchantId) return res.status(503).json({ error: 'Payment webhook verification is not configured' });
+  const sb = getServerSupabaseAdmin();
+  if (!sb) return res.status(503).json({ error: 'Payment database is not configured' });
+  const { data: transaction, error: transactionError } = await sb.from('payment_transactions').select('client_reference').eq('client_reference', clientReference).maybeSingle();
+  if (transactionError) return res.status(503).json({ error: 'Could not load payment transaction' });
+  if (!transaction) return res.status(404).json({ error: 'Payment transaction not found' });
+  try {
+    const response = await fetch(clicknPayBaseUrl + '/payme/orders/' + encodeURIComponent(clientReference) + '/status', { headers: { Authorization: 'Bearer ' + apiKey, 'X-Merchant-ID': merchantId } });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return res.status(502).json({ error: 'Payment gateway verification failed' });
+    const status = paymentStatusFromGateway(data.status);
+    await updatePaymentTransaction(clientReference, { status, gateway_payload: data, ...(status === 'SUCCESS' ? { completed_at: new Date().toISOString() } : {}) });
+    if (status === 'SUCCESS') await fulfillSuccessfulPayment(clientReference, data);
+    return res.json({ received: true, clientReference, status });
+  } catch (error: any) {
+    return res.status(502).json({ error: error.message || 'Payment gateway verification failed' });
   }
-
-  const rawStatus = String(payload.status || '').toUpperCase();
-  const status = rawStatus === 'SUCCESS' || rawStatus === 'PAID' ? 'SUCCESS' : rawStatus === 'FAILED' ? 'FAILED' : 'PENDING';
-
-  const sb = getServerSupabase();
-  if (sb) {
-    await sb.from('payment_transactions').update({
-      status,
-      gateway_payload: payload,
-      updated_at: new Date().toISOString()
-    }).eq('client_reference', clientReference);
-  }
-
-  if (status === 'SUCCESS') {
-    await fulfillSuccessfulPayment(clientReference, payload);
-  }
-
-  return res.json({ received: true, clientReference, status });
 });
 
 
-
-function transitProvider(user: any): boolean { return ['driver','fleet_owner','admin'].includes(user?.user_metadata?.role); }
+function transitProvider(user: any): boolean { return user?.ridezw_role === 'admin' || (user?.ridezw_role === 'driver' && user?.profile?.status === 'active'); }
 app.get('/api/mobility/departures', async (req, res) => {
   const sb=getServerSupabase(); if(!sb) return res.status(503).json({error:'Database unavailable'});
   let query=sb.from('transit_departures').select('*, transit_routes(*), transit_vehicles(*)').in('status',['scheduled','boarding']).order('departure_at',{ascending:true}).limit(100);
@@ -888,12 +651,47 @@ app.get('/api/mobility/departures', async (req, res) => {
   if(req.query.airportCode) query=query.eq('airport_code',String(req.query.airportCode));
   const {data,error}=await query; if(error) return res.status(500).json({error:'Could not load departures'}); return res.json({departures:data||[]});
 });
-app.get('/api/mobility/bookings', async (req,res)=>{const user=await requireMobileUser(req,res);if(!user)return;const sb=getServerSupabase();const{data,error}=await sb.from('transit_bookings').select('*, transit_departures(*)').eq('passenger_id',user.id).order('created_at',{ascending:false});if(error)return res.status(500).json({error:'Could not load bookings'});return res.json({bookings:data||[]});});
-app.post('/api/mobility/bookings', async (req,res)=>{const user=await requireMobileUser(req,res);if(!user)return;const b=req.body||{};const sb=getServerSupabase();try{const{data,error}=await sb.rpc('reserve_transit_booking',{p_passenger_id:user.id,p_departure_id:b.departureId,p_service_type:b.serviceType,p_seats:Number(b.seats||1),p_passenger_name:b.passengerName,p_passenger_phone:b.passengerPhone,p_luggage_count:Number(b.luggageCount||0),p_welcome_board_name:b.welcomeBoardName||null,p_payment_method:b.paymentMethod});if(error){const code=String(error.message||'');const status=code.includes('CAPACITY_EXCEEDED')?409:400;return res.status(status).json({error:code.includes('CAPACITY_EXCEEDED')?'No seats remain for this departure':error.message});}return res.status(201).json(data);}catch(error:any){return res.status(500).json({error:error.message});}});
-app.post('/api/provider/departures', async (req,res)=>{const user=await requireMobileUser(req,res);if(!user||!transitProvider(user))return res.status(403).json({error:'Provider role required'});const sb=getServerSupabase();const b=req.body||{};const row={...b,provider_id:user.id,capacity_total:Number(b.capacityTotal),seats_reserved:0,standing_passengers_allowed:false};delete row.capacityTotal;const{data,error}=await sb.from('transit_departures').insert(row).select().single();if(error)return res.status(400).json({error:error.message});return res.status(201).json({departure:data});});
-app.get('/api/provider/departures', async (req,res)=>{const user=await requireMobileUser(req,res);if(!user||!transitProvider(user))return res.status(403).json({error:'Provider role required'});const sb=getServerSupabase();const{data,error}=await sb.from('transit_departures').select('*, transit_bookings(*)').eq('provider_id',user.id).order('departure_at',{ascending:true});if(error)return res.status(500).json({error:'Could not load provider manifest'});return res.json({departures:data||[]});});
-app.patch('/api/provider/bookings/:id/status', async(req,res)=>{const user=await requireMobileUser(req,res);if(!user||!transitProvider(user))return res.status(403).json({error:'Provider role required'});const sb=getServerSupabase();const next=String(req.body?.status||'');if(!['assigned','boarding','boarded','completed','cancelled','no_show'].includes(next))return res.status(400).json({error:'Invalid booking status'});const{data,error}=await sb.from('transit_bookings').update({status:next,driver_id:user.id,updated_at:new Date().toISOString()}).eq('id',req.params.id).select().single();if(error)return res.status(400).json({error:error.message});return res.json({booking:data});});
-app.post('/api/provider/bookings/:id/board', async(req,res)=>{const user=await requireMobileUser(req,res);if(!user||!transitProvider(user))return res.status(403).json({error:'Provider role required'});const seat=Number(req.body?.seatNumber);if(!Number.isInteger(seat)||seat<1)return res.status(400).json({error:'Valid seatNumber required'});const sb=getServerSupabase();const{data,error}=await sb.from('transit_boarding_events').insert({booking_id:req.params.id,seat_number:seat,scanned_by:user.id}).select().single();if(error)return res.status(409).json({error:'Seat already boarded or booking unavailable'});await sb.from('transit_bookings').update({status:'boarded',updated_at:new Date().toISOString()}).eq('id',req.params.id);return res.status(201).json({boardingEvent:data});});
+app.get('/api/mobility/bookings', async (req,res)=>{const user=await requireMobileUser(req,res);if(!user)return;const sb=getServerSupabaseAdmin();if(!sb)return res.status(503).json({error:'Database unavailable'});const{data,error}=await sb.from('transit_bookings').select('*, transit_departures(*)').eq('passenger_id',user.id).order('created_at',{ascending:false});if(error)return res.status(500).json({error:'Could not load bookings'});return res.json({bookings:data||[]});});
+app.post('/api/mobility/bookings', async (req,res)=>{const user=await requireMobileUser(req,res);if(!user)return;const b=req.body||{};const sb=getServerSupabaseAdmin();if(!sb)return res.status(503).json({error:'Database unavailable'});try{const{data,error}=await sb.rpc('reserve_transit_booking',{p_passenger_id:user.id,p_departure_id:b.departureId,p_service_type:b.serviceType,p_seats:Number(b.seats||1),p_passenger_name:user.profile.display_name,p_passenger_phone:user.profile.phone,p_luggage_count:Number(b.luggageCount||0),p_welcome_board_name:b.welcomeBoardName||null,p_payment_method:b.paymentMethod});if(error){const code=String(error.message||'');const status=code.includes('CAPACITY_EXCEEDED')?409:400;return res.status(status).json({error:code.includes('CAPACITY_EXCEEDED')?'No seats remain for this departure':error.message});}return res.status(201).json(data);}catch(error:any){return res.status(500).json({error:error.message});}});
+app.post('/api/provider/departures', async (req,res)=>{const user=await requireMobileUser(req,res);if(!user||!transitProvider(user))return res.status(403).json({error:'Provider role required'});const sb=getServerSupabaseAdmin();if(!sb)return res.status(503).json({error:'Database unavailable'});const b=req.body||{};const row={...b,provider_id:user.id,capacity_total:Number(b.capacityTotal),seats_reserved:0,standing_passengers_allowed:false};delete row.capacityTotal;const{data,error}=await sb.from('transit_departures').insert(row).select().single();if(error)return res.status(400).json({error:error.message});return res.status(201).json({departure:data});});
+app.get('/api/provider/departures', async (req,res)=>{const user=await requireMobileUser(req,res);if(!user||!transitProvider(user))return res.status(403).json({error:'Provider role required'});const sb=getServerSupabaseAdmin();if(!sb)return res.status(503).json({error:'Database unavailable'});const{data,error}=await sb.from('transit_departures').select('*, transit_bookings(*)').eq('provider_id',user.id).order('departure_at',{ascending:true});if(error)return res.status(500).json({error:'Could not load provider manifest'});return res.json({departures:data||[]});});
+app.patch('/api/provider/bookings/:id/status', async (req, res) => {
+  const user = await requireMobileUser(req, res);
+  if (!user || !transitProvider(user)) return res.status(403).json({ error: 'Provider role required' });
+  const sb = getServerSupabaseAdmin();
+  if (!sb) return res.status(503).json({ error: 'Database unavailable' });
+  const next = String(req.body?.status || '');
+  if (!['assigned', 'boarding', 'boarded', 'completed', 'cancelled', 'no_show'].includes(next)) return res.status(400).json({ error: 'Invalid booking status' });
+  const { data: booking, error: bookingError } = await sb.from('transit_bookings').select('id,departure_id').eq('id', req.params.id).maybeSingle();
+  if (bookingError) return res.status(500).json({ error: 'Could not verify booking ownership' });
+  if (!booking) return res.status(404).json({ error: 'Booking not found' });
+  const { data: departure, error: departureError } = await sb.from('transit_departures').select('provider_id').eq('id', booking.departure_id).maybeSingle();
+  if (departureError) return res.status(500).json({ error: 'Could not verify booking ownership' });
+  if (!departure || (user.ridezw_role !== 'admin' && departure.provider_id !== user.id)) return res.status(403).json({ error: 'Booking belongs to another provider' });
+  const { data, error } = await sb.from('transit_bookings').update({ status: next, driver_id: user.id, updated_at: new Date().toISOString() }).eq('id', req.params.id).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  return res.json({ booking: data });
+});
+app.post('/api/provider/bookings/:id/board', async (req, res) => {
+  const user = await requireMobileUser(req, res);
+  if (!user || !transitProvider(user)) return res.status(403).json({ error: 'Provider role required' });
+  const seat = Number(req.body?.seatNumber);
+  if (!Number.isInteger(seat) || seat < 1) return res.status(400).json({ error: 'Valid seatNumber required' });
+  const sb = getServerSupabaseAdmin();
+  if (!sb) return res.status(503).json({ error: 'Database unavailable' });
+  const { data: booking, error: bookingError } = await sb.from('transit_bookings').select('id,departure_id,seat_numbers').eq('id', req.params.id).maybeSingle();
+  if (bookingError) return res.status(500).json({ error: 'Could not verify booking ownership' });
+  if (!booking) return res.status(404).json({ error: 'Booking not found' });
+  const { data: departure, error: departureError } = await sb.from('transit_departures').select('provider_id').eq('id', booking.departure_id).maybeSingle();
+  if (departureError) return res.status(500).json({ error: 'Could not verify booking ownership' });
+  if (!departure || (user.ridezw_role !== 'admin' && departure.provider_id !== user.id)) return res.status(403).json({ error: 'Booking belongs to another provider' });
+  if (Array.isArray(booking.seat_numbers) && !booking.seat_numbers.includes(seat)) return res.status(400).json({ error: 'Seat is not assigned to this booking' });
+  const { data, error } = await sb.from('transit_boarding_events').insert({ booking_id: req.params.id, seat_number: seat, scanned_by: user.id }).select().single();
+  if (error) return res.status(409).json({ error: 'Seat already boarded or booking unavailable' });
+  const { error: updateError } = await sb.from('transit_bookings').update({ status: 'boarded', updated_at: new Date().toISOString() }).eq('id', req.params.id);
+  if (updateError) return res.status(500).json({ error: 'Boarding event was saved but booking status could not be updated' });
+  return res.status(201).json({ boardingEvent: data });
+});
 
 app.get('/api/health', (req, res) => {
   const sb = getServerSupabase();

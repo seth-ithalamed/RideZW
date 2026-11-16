@@ -166,11 +166,13 @@ export function AuthGate({ role = 'rider', children }: { role?: 'rider' | 'drive
         fullPhone,
         otpCode.trim(),
         role,
-        regDetails
+        regDetails,
+        mode
       );
 
-      if (authenticatedUser?.user_metadata?.role && authenticatedUser.user_metadata.role !== role) {
-        throw new Error(`This account is registered as a ${authenticatedUser.user_metadata.role}. Please use the ${authenticatedUser.user_metadata.role} app.`);
+      if (authenticatedUser?.app_metadata?.role !== role) {
+        const accountRole = authenticatedUser?.app_metadata?.role;
+        throw new Error(accountRole ? `This account is registered as a ${accountRole}. Please use the ${accountRole} app.` : 'The server did not verify this account role.');
       }
 
       setUser(authenticatedUser);
